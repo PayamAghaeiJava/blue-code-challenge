@@ -14,7 +14,7 @@ import lombok.Setter;
 @Table
 @NoArgsConstructor
 public class Customer extends AbstractEntity {
-    @Column(name = "national_code", nullable = false)
+    @Column(name = "national_code", nullable = false, unique = true)
     private String nationalCode;
     @Column(name = "first_name")
     private String firstName;

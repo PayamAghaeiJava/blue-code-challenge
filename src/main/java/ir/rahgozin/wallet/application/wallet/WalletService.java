@@ -2,6 +2,7 @@ package ir.rahgozin.wallet.application.wallet;
 
 import ir.rahgozin.wallet.application.common.NotificationService;
 import ir.rahgozin.wallet.application.customer.Customer;
+import ir.rahgozin.wallet.application.customer.CustomerRepository;
 import ir.rahgozin.wallet.application.wallet.Account.AccountType;
 import ir.rahgozin.wallet.application.wallet.command.CreateAccountCommand;
 import ir.rahgozin.wallet.application.wallet.command.CreditAccountCommand;
@@ -28,15 +29,24 @@ import java.util.stream.Collectors;
 @AllArgsConstructor
 public class WalletService {
     private AccountRepository accountRepository;
+    private CustomerRepository customerRepository;
     private NotificationService notificationService;
 
+    // readme.md: accounts have one owner. Create customers separately, then attach one here would be second solution and even a better idea.
+    // also if only one method is responsible for a persist , it has full responsibility of it's failure
+    @Transactional
     public String createAccount(CreateAccountCommand command) {
+        Customer customer = customerRepository.findByNationalCode(command.getNationalCode());
+        if (customer == null) {
+            Customer newCustomer = new Customer();
+            newCustomer.setMobile(command.getMobile());
+            newCustomer.setFirstName(command.getFirstName());
+            newCustomer.setLastName(command.getLastName());
+            newCustomer.setNationalCode(command.getNationalCode());
+            customer = customerRepository.save(newCustomer);
+        }
+
         Account account = new Account();
-        Customer customer = new Customer();
-        customer.setMobile(command.getMobile());
-        customer.setFirstName(command.getFirstName());
-        customer.setLastName(command.getLastName());
-        customer.setNationalCode(command.getNationalCode());
         account.setOwner(customer);
         account.setTransactions(Set.of());
         account.setType(AccountType.valueOf(command.getType()));

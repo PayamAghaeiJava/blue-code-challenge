@@ -19,6 +19,8 @@ import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 
 import ir.rahgozin.wallet.application.common.NotificationService;
 import ir.rahgozin.wallet.application.customer.Customer;
+import ir.rahgozin.wallet.application.customer.CustomerRepository;
+import ir.rahgozin.wallet.application.wallet.command.CreateAccountCommand;
 import ir.rahgozin.wallet.application.wallet.dto.AccountBalanceDTO;
 import ir.rahgozin.wallet.application.wallet.dto.TransactionDTO;
 import ir.rahgozin.wallet.application.wallet.query.AccountBalanceQuery;
@@ -37,7 +39,54 @@ public class WalletServiceTest {
     AccountRepository accountRepository;
 
     @MockBean
+    CustomerRepository customerRepository;
+
+    @MockBean
     NotificationService notificationService;
+
+    @Test
+    void givenNewCustomer_whenCreateAccount_thenSaveCustomerBeforeAccount() {
+        CreateAccountCommand command = new CreateAccountCommand();
+        command.setNationalCode("1234567890");
+        command.setFirstName("Ada");
+        command.setLastName("Lovelace");
+        command.setMobile("09120000000");
+        command.setType("CHECKING");
+
+        Mockito.when(customerRepository.save(Mockito.any(Customer.class))).thenAnswer(invocation -> {
+            Customer savedCustomer = invocation.getArgument(0);
+            savedCustomer.setId(42L);
+            return savedCustomer;
+        });
+        Mockito.when(accountRepository.save(Mockito.any(Account.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        String accountNumber = walletService.createAccount(command);
+
+        Mockito.verify(customerRepository).save(Mockito.argThat(customer ->
+                "1234567890".equals(customer.getNationalCode()) && customer.getId() != null));
+        Mockito.verify(accountRepository).save(Mockito.argThat(account ->
+                account.getOwner().getId().equals(42L)
+                        && account.getNumber().equals(accountNumber)));
+    }
+
+    @Test
+    void givenExistingCustomer_whenCreateAccount_thenReuseCustomer() {
+        Customer existingCustomer = new Customer();
+        existingCustomer.setId(7L);
+        Mockito.when(customerRepository.findByNationalCode("1234567890")).thenReturn(existingCustomer);
+        Mockito.when(accountRepository.save(Mockito.any(Account.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        CreateAccountCommand command = new CreateAccountCommand();
+        command.setNationalCode("1234567890");
+        command.setType("CHECKING");
+
+        walletService.createAccount(command);
+
+        Mockito.verify(customerRepository, Mockito.never()).save(Mockito.any(Customer.class));
+        Mockito.verify(accountRepository).save(Mockito.argThat(account -> account.getOwner() == existingCustomer));
+    }
 
 
     @Test
