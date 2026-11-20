@@ -1,0 +1,34 @@
+﻿BLUEBANK INTERVIEW PREP PLAN
+Interview: Saturday, November 21, 2026 at 15:30
+Available preparation time: about 25 focused hours
+
+1. PROJECT MAP — 5 HOURS
+- Read readme.md, pom.xml, and application.yml.
+- Trace account creation, credit, debit, balance, and transaction requests from WalletController through WalletService to repositories and entities.
+- Trace KYC and notification flows separately.
+- Deliverable: one-page architecture sketch plus the main business rules.
+
+2. FRAMEWORKS AND PATTERNS — 4 HOURS
+- Spring MVC, dependency injection, ConversionService, and request converters.
+- JPA entities, relationships, repositories, and @Transactional.
+- Spring Cache and the in-memory ConcurrentMapCacheManager; understand the Redis dependency.
+- Kafka listener setup, command/query objects, DTOs, Lombok, and JUnit/Mockito tests.
+- Be ready to explain how these are used in this codebase.
+
+3. CODE REVIEW PRACTICE — 5 HOURS
+Read the wallet service, controller, entities, KYC code, and tests. For each finding, note impact, evidence, priority, and a test that would catch it.
+Things to investigate:
+- listTransactions() is unfinished.
+- README says SAVINGS, while Account uses SAVING.
+- Debit lookup uses findById while credit uses findByNumber; verify the intended account identifier.
+- The KYC listener annotation is commented out; inspect its dependency injection and switch fall-through behavior.
+- Check that KYC, savings withdrawal rules, and the daily balance-query limit are enforced.
+
+4. PAIR PROGRAMMING PRACTICE — 8 HOURS
+Use a separate project copy for rehearsal. Practice implementing listTransactions(): clarify expected behavior, cover customer and filter edge cases with tests, implement in small steps, and narrate decisions while coding. Also rehearse one small fix from the review list.
+
+5. MOCK AND FINAL RECAP — 3 HOURS
+- Simulate one timed code review and one timed coding task.
+- Review the project sketch, business rules, and top findings.
+- Leave time for a calm IDE and meeting-link check before the interview.
+

@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wallet Critical Issues and Solutions</title>
+<style>
+@page { size: A4; margin: 15mm 16mm 16mm; }
+* { box-sizing: border-box; }
+body { font-family: "Segoe UI", Arial, sans-serif; color: #1b2938; font-size: 10pt; line-height: 1.45; }
+h1,h2,h3 { color: #123b63; line-height: 1.18; page-break-after: avoid; }
+h1 { font-size: 30pt; margin: 6pt 0 10pt; }
+h2 { font-size: 18pt; border-bottom: 1px solid #cad7e2; padding-bottom: 5pt; margin: 18pt 0 10pt; }
+h3 { font-size: 13pt; margin: 11pt 0 4pt; }
+p { margin: 5pt 0 7pt; }
+ul,ol { padding-left: 20pt; margin: 4pt 0 8pt; }
+li { margin: 3pt 0; }
+code { font: 8.6pt Consolas, monospace; color: #153d5d; background: #edf3f8; padding: 1px 3px; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f1f5f8; border-left: 3px solid #4385b4; padding: 8pt 10pt; font: 8.1pt/1.36 Consolas, monospace; page-break-inside: avoid; }
+table { width: 100%; border-collapse: collapse; margin: 7pt 0 10pt; font-size: 8.7pt; page-break-inside: avoid; }
+th { background: #174a74; color: white; text-align: left; }
+th,td { border: 1px solid #ccd7e2; padding: 5pt 6pt; vertical-align: top; }
+tr:nth-child(even) td { background: #f3f7fa; }
+.cover { min-height: 243mm; display: flex; flex-direction: column; justify-content: center; page-break-after: always; }
+.eyebrow { color: #477ba2; text-transform: uppercase; letter-spacing: 1.8px; font-weight: bold; font-size: 8.8pt; }
+.subtitle { color: #4c6276; font-size: 14pt; max-width: 148mm; }
+.band,.callout,.evidence,.solution { padding: 8pt 10pt; margin: 8pt 0; page-break-inside: avoid; }
+.band { background: #eef5fa; border-left: 4px solid #3979a6; }
+.callout { background: #fff4e5; border-left: 4px solid #d58b24; }
+.evidence { background: #f1f5f8; border-left: 4px solid #607d95; }
+.solution { background: #edf7f0; border-left: 4px solid #38895a; }
+.issue { border: 1px solid #cad7e2; border-top: 5px solid #b34734; padding: 10pt 12pt; margin: 12pt 0; page-break-inside: avoid; }
+.issue h2 { margin-top: 0; }
+.tag { color: #9a3b28; font-weight: bold; }
+.small { font-size: 8.2pt; color: #596d7e; }
+.diagram { font: 9pt/1.8 Consolas, monospace; text-align: center; background: #eff5f9; border: 1px solid #c8d7e5; padding: 8pt; page-break-inside: avoid; }
+.page { page-break-before: always; }
+</style>
+</head>
+<body>
+<section class="cover">
+  <div class="eyebrow">Interview presentation · Code review briefing</div>
+  <h1>Critical Wallet<br>Code Issues</h1>
+  <p class="subtitle">What can fail, why it matters, and how to repair it safely.</p>
+  <div class="band"><strong>Review scope</strong><br>Core account, transaction, balance, KYC, and rate-limit paths in this Java Spring Boot repository. Findings combine source review with the recorded Maven test run and local HTTP smoke checks.</div>
+  <p class="small">Prepared November 20, 2026 · Project: Java 21 / Spring Boot 3.3.3</p>
+</section>
+
+<h2>Executive summary</h2>
+<p>This project has a sensible starting structure: an HTTP controller delegates to an application service, which uses Spring Data repositories and JPA entities. The highest-risk gaps are in the money-moving path: account creation fails, debit does not have a usable API mapping, transactions are not safely persisted, and balance arithmetic counts withdrawals like deposits.</p>
+<div class="diagram">Customer → Account → Transaction ledger<br>                ↓<br>          Balance + history</div>
+<div class="callout"><strong>Interview framing:</strong> “I traced the documented wallet rules through the controller, service, and persistence model. The first fixes I’d prioritize are the ones that can stop account creation, break debits, or report the wrong balance. I verified several of these with the project’s tests and a local HTTP run.”</div>
+
+<h2>What execution confirmed</h2>
+<table>
+<tr><th>Check</th><th>Observed result</th><th>Why it matters</th></tr>
+<tr><td>Maven tests</td><td><strong>5 run · 4 failed · 1 passed</strong></td><td>Existing tests already expose balance, history, and rate-limit failures.</td></tr>
+<tr><td>Balance service test</td><td>Expected 50,000; got 150,000.</td><td>Credits and withdrawals are all added as positive amounts.</td></tr>
+<tr><td>Transaction history test</td><td>Expected 75,000; got 0.</td><td>The service returns an empty list.</td></tr>
+<tr><td>Rate-limit tests</td><td>One expected 429 but got 200; another expected 200 but got 429.</td><td>Off-by-one behavior and shared static state make tests fail.</td></tr>
+<tr><td>Local HTTP smoke checks</td><td>Account create, debit, and credit to unknown account returned 500. History returned 200 with <code>[]</code>.</td><td>The main API paths lack safe persistence, conversion, or not-found handling.</td></tr>
+<tr><td>Balance limit in a fresh app process</td><td>Requests 1–6 returned 200; request 7 returned 429.</td><td>The stated five-per-day rule is implemented as six allowed, then blocked indefinitely.</td></tr>
+</table>
+<p class="small">The app started on port 8080 with H2. Its actual route includes both the configured context path and controller mapping: <code>/wallet/wallet/...</code>. Verification evidence was captured November 19, 2026. One concurrent rate-limit test passed in that run, but its shared counter and the production HashMap do not establish race safety.</p>
+
+<div class="page"></div>
+<h2><span class="tag">P0 · 1</span> Account creation fails at persistence</h2>
+<p><strong>Where:</strong> <code>WalletService.createAccount()</code> and <code>Account.owner</code>.</p>
+<p>The service creates a new <code>Customer</code>, attaches it to a new <code>Account</code>, and saves only the account. The owner relationship has no <code>cascade = PERSIST</code>, and the customer repository is not used. The database therefore receives an account that references a transient, unsaved customer. The valid-shaped create request returned HTTP 500 in the smoke run.</p>
+<div class="callout"><strong>Impact:</strong> the API cannot reliably create the accounts required by every later wallet operation. The code also creates a new customer for each account instead of reusing an existing customer who may own multiple accounts.</div>
+<div class="solution"><strong>Repair:</strong> define customer identity and lifecycle. Find the customer by national code or save a new customer first; then attach that persisted customer to the account. Make national code unique if it is the identity key, and wrap the use case in a database transaction.</div>
+<pre>@Transactional
+public String createAccount(CreateAccountCommand command) {
+    Customer owner = customerRepository.findByNationalCode(command.getNationalCode())
+        .orElseGet(() -&gt; customerRepository.save(newCustomer(command)));
+    Account account = new Account();
+    account.setOwner(owner);
+    return accountRepository.save(account).getNumber();
+}</pre>
+<p><strong>Prove the fix:</strong> create two accounts for the same national code. Assert that both accounts point to one customer row and that each account can be loaded after the transaction commits.</p>
+
+<div class="page"></div>
+<h2><span class="tag">P0 · 2</span> Transaction entries are not safely stored</h2>
+<p><strong>Where:</strong> <code>WalletService.createAccount()</code>, <code>creditAccount()</code>, <code>debitAccount()</code>, and <code>Account.transactions</code>.</p>
+<p>Creation initializes transactions with <code>Set.of()</code>, which cannot be changed. Credit/debit later call <code>add()</code>. In addition, the collection is the inverse side of the JPA relationship (<code>mappedBy = "account"</code>), has no cascade, and no transaction repository is used. The transaction's <code>account</code> field owns the database foreign key.</p>
+<div class="callout"><strong>Impact:</strong> mutation can throw <code>UnsupportedOperationException</code>; even with a mutable set, saving the account does not necessarily persist the new ledger row. Without a durable transaction record, the wallet cannot reconstruct balance or audit money movement.</div>
+<div class="solution"><strong>Repair:</strong> use a mutable collection when the in-memory relationship needs one. Persist transaction rows explicitly through a <code>TransactionRepository</code>, or configure intentional cascade and maintain both sides with entity helper methods. Always set the owning <code>Transaction.account</code> side.</div>
+<pre>Transaction tx = new Transaction(requestId, account, Direction.CREDIT, amount);
+transactionRepository.save(tx); // transaction owns account_id</pre>
+<p><strong>Prove the fix:</strong> credit and debit a persisted account, commit, clear the persistence context, reload the transactions, and verify their account IDs and request IDs.</p>
+
+<div class="page"></div>
+<h2><span class="tag">P0 · 3</span> Debit cannot reliably identify an account</h2>
+<p><strong>Where:</strong> <code>WalletController.debitAccount()</code>, debit request/command, and <code>WalletService.debitAccount()</code>.</p>
+<p>The controller asks Spring's <code>ConversionService</code> to convert <code>DebitAccountRequest</code> to <code>DebitAccountCommand</code>, but no converter for those classes exists. Both types declare a numeric account number, and the service calls <code>findById()</code>. The public account number generated by <code>Account</code> is a UUID string. Credit uses that public number through <code>findByNumber()</code>. A valid-shaped debit returned HTTP 500 in the smoke run.</p>
+<div class="callout"><strong>Impact:</strong> the API contract is inconsistent. A caller cannot reliably send the same account identifier for credit and debit, and the missing conversion may prevent the service from running at all.</div>
+<div class="solution"><strong>Repair:</strong> choose one external identifier. If it is the UUID account number, make the debit request and command fields strings, add a converter that copies request ID, account number, and amount, and use <code>findByNumber()</code>. Return a 404 domain response when absent.</div>
+<pre>Account account = accountRepository.findByNumber(command.getAccountNumber())
+    .orElseThrow(() -&gt; new AccountNotFoundException(command.getAccountNumber()));</pre>
+<p><strong>Prove the fix:</strong> test a debit using a real UUID account number, an unknown UUID (404), and invalid JSON (400). Assert that no database primary key is confused with the public account number.</p>
+
+<div class="page"></div>
+<h2><span class="tag">P0 · 4</span> Balance is calculated incorrectly</h2>
+<p><strong>Where:</strong> <code>WalletService.accountBalance()</code>.</p>
+<p>The method sums every transaction amount without reading its direction. The test fixture contains 10 deposits and 5 withdrawals of 10,000 each. Its expected net balance is 50,000, but the service adds all 15 and returns 150,000. The test failure confirms the error.</p>
+<div class="callout"><strong>Impact:</strong> users may see money that is not available. Balance is a central financial result, so this is a correctness blocker.</div>
+<div class="solution"><strong>Repair:</strong> model money with <code>BigDecimal</code> and direction with an enum. Define the balance as the sum of credits minus the sum of debits. Do not store or expose an ambiguous amount without a currency/scale policy. Query only the target customer's accounts instead of loading every account.</div>
+<pre>// After adopting BigDecimal and a Direction enum
+BigDecimal balance = transactions.stream()
+    .map(tx -&gt; tx.getDirection() == Direction.CREDIT
+        ? tx.getAmount() : tx.getAmount().negate())
+    .reduce(BigDecimal.ZERO, BigDecimal::add);</pre>
+<p><strong>Prove the fix:</strong> deposit 100, deposit 50, withdraw 30; expect 120. Also test decimal fractions, no transactions, and more than one account.</p>
+
+<div class="page"></div>
+<h2><span class="tag">P1 · 5</span> Required transaction controls are missing</h2>
+<p><strong>Where:</strong> README business rules compared with <code>WalletService.creditAccount()</code> and <code>debitAccount()</code>.</p>
+<p>The README says customers must pass KYC, savings accounts allow deposits only, and checking accounts allow deposits and withdrawals. The write methods do not check verification or account type. Debit also does not reject zero/negative amounts or insufficient funds. No authentication or account-ownership check is visible in this project.</p>
+<div class="callout"><strong>Impact:</strong> a caller can attempt operations that violate the stated product rules. If these endpoints are exposed to untrusted users, accepting caller-supplied customer/account IDs without proving ownership is an access-control risk.</div>
+<div class="solution"><strong>Repair:</strong> enforce these rules in the service/use case so every entry point shares them. Identify the caller from authentication, verify ownership, require a verified customer, enforce account type and positive amount, and check available funds atomically before recording a debit. Align the README's <code>SAVINGS</code> spelling with the enum's <code>SAVING</code>.</div>
+<p><strong>Prove the fix:</strong> test valid checking debit, savings debit rejection, unverified customer, another user's account, zero/negative amount, and insufficient funds.</p>
+
+<div class="page"></div>
+<h2><span class="tag">P1 · 6</span> Retries and simultaneous debits can corrupt results</h2>
+<p><strong>Where:</strong> transaction <code>requestId</code>, credit request/converter, and account debit flow.</p>
+<p><code>Transaction.requestId</code> is unique, suggesting retry protection, but the credit request has no request ID and the converter cannot populate one. The service does not look for an earlier transaction before applying an operation. There is also no lock/version check around balance validation and debit recording.</p>
+<div class="callout"><strong>Impact:</strong> a client retry after a timeout can apply the same deposit twice. Two simultaneous debits can both observe the same starting funds and both succeed.</div>
+<div class="solution"><strong>Repair:</strong> require an idempotency key for every money-changing request; store it with a uniqueness constraint and return the original result for a retry. Make available-funds checking and debit recording atomic using optimistic locking (<code>@Version</code>) or a suitable database lock. Keep the ledger as the source of truth.</div>
+<p><strong>Prove the fix:</strong> send the same request twice and assert one ledger entry. Run two concurrent withdrawals whose total exceeds the balance and assert exactly one is rejected.</p>
+
+<div class="page"></div>
+<h2><span class="tag">P1 · 7</span> Balance limit is not five per day</h2>
+<p><strong>Where:</strong> <code>WalletController.requestCounter</code> and <code>accountBalance()</code>.</p>
+<p>The static <code>HashMap</code> blocks only when the current count is greater than five. In a fresh app, requests one through six returned 200; request seven returned 429. There is no daily reset or expiration. The test suite also reuses customer ID 12345; static state leaks across tests, making a test that expects 200 receive 429.</p>
+<div class="callout"><strong>Impact:</strong> behavior contradicts the five-per-day requirement and changes after application restart. Concurrent map/check/update operations are not atomic. A concurrent test passed once, but does not prove safety.</div>
+<div class="solution"><strong>Repair:</strong> define the daily time zone and reset boundary. Use an atomic counter keyed by customer and date, with expiration. For multiple application instances, use an atomic shared limiter such as Redis. Keep this separate from cache configuration.</div>
+<p><strong>Prove the fix:</strong> fifth call 200; sixth 429; next day's first call 200; independent customer counters; a simultaneous burst allows exactly five. Inject a clock so reset tests are deterministic.</p>
+
+<div class="page"></div>
+<h2><span class="tag">P1 · 8</span> Transaction history is an empty stub</h2>
+<p><strong>Where:</strong> <code>WalletService.listTransactions()</code>.</p>
+<p>The service has a TODO and returns <code>Collections.emptyList()</code>. Runtime returned HTTP 200 with <code>[]</code>. The service test expected a non-empty filtered sum of 75,000 but received 0.</p>
+<div class="callout"><strong>Impact:</strong> clients cannot see transaction history, and the successful HTTP status can disguise the missing feature.</div>
+<div class="solution"><strong>Repair:</strong> define the query filters, expose them in the endpoint, and add a repository query scoped to customer-owned accounts with direction and amount bounds. Add pagination and deterministic ordering so large histories remain efficient.</div>
+<p><strong>Prove the fix:</strong> include two customers, several directions and amounts, boundary values, no matches, and multiple pages. Verify a customer never sees another customer's transactions.</p>
+
+<div class="page"></div>
+<h2><span class="tag">P1 · 9</span> KYC processing is disconnected from wallet operations</h2>
+<p><strong>Where:</strong> <code>CustomerVerificationListener</code>, <code>CustomerVerificationService</code>, and wallet credit/debit service methods.</p>
+<p>The Kafka listener annotation is commented out. The listener's service field is not injected; the verification service's repository field is not injected. The switch has no break, so an <code>ID</code> event falls through into the national-code handler. Credit/debit do not check the customer's verified flag.</p>
+<div class="callout"><strong>Impact:</strong> KYC messages do not update customer state through Kafka, and even a manual update does not prevent an unverified customer from transacting.</div>
+<div class="solution"><strong>Repair:</strong> use constructor injection, enable a configured listener, dispatch identifier types without fall-through, handle missing customers and unknown types explicitly, and enforce verification in wallet use cases. Make event processing observable and safe to retry.</div>
+<pre>switch (event.getIdentifierType()) {
+    case "ID" -&gt; verificationService.handleByCustomerId(...);
+    case "NATIONAL_CODE" -&gt; verificationService.handleByNationalCode(...);
+    default -&gt; throw new InvalidIdentifierTypeException(...);
+}</pre>
+<p><strong>Prove the fix:</strong> test each event route and verify that an unverified customer receives a clear rejection from credit/debit.</p>
+
+<div class="page"></div>
+<h2>Repair sequence for a pair-programming task</h2>
+<ol>
+<li><strong>Clarify:</strong> confirm the public account identifier, expected balance semantics, KYC behavior, and daily-limit boundary.</li>
+<li><strong>Write a failing test:</strong> choose one behavior, such as a 100 deposit and 30 withdrawal producing balance 70.</li>
+<li><strong>Repair the smallest slice:</strong> align request mapping, service rule, repository persistence, and response.</li>
+<li><strong>Check the boundary cases:</strong> unknown account, retry, invalid amount, concurrent debit, and authorization.</li>
+<li><strong>Report precisely:</strong> say what passed and what remains unverified.</li>
+</ol>
+<h3>Follow-up risks after the critical fixes</h3>
+<ul>
+<li><code>NotificationService</code> only saves a PENDING message asynchronously; it does not deliver SMS or report delivery status. Consider a transactional outbox and worker.</li>
+<li><code>CreditAccountDTO</code> has private fields with an all-args constructor but no getters; add a JSON serialization test and a record/getters.</li>
+<li>H2 is in-memory with <code>ddl-auto: create-drop</code>; data disappears at shutdown. Use durable storage and migrations for deployment.</li>
+<li>Redis/cache configuration is simple in-memory cache; the Redis starter is present but not used as the cache backend here.</li>
+</ul>
+<div class="solution"><strong>Closing line for the presentation:</strong> “The architecture is understandable, but the wallet's core correctness needs attention before feature polish. I would first make account creation and ledger persistence reliable, then align the debit contract and balance math, and prove each change with focused tests.”</div>
+<p class="small">This briefing prioritizes issues that block or can make wallet behavior unsafe. It combines source review, 5 Maven test results (4 failed), and local HTTP smoke checks. The application source was not changed. Verification used Maven 3.9.11 and Java 21.0.7 with cached dependencies on November 19, 2026.</p>
+</body>
+</html>

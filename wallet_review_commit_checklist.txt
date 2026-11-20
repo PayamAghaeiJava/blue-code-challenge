@@ -1,0 +1,55 @@
+WALLET CODE REVIEW COMMIT CHECKLIST
+==================================
+
+Use [x] after the corresponding change has been implemented, reviewed, and committed.
+These are proposed commit subjects only; this checklist does not change application code.
+
+CRITICAL FINDINGS
+-----------------
+[ ] 01  fix: persist customers before creating wallet accounts
+        Save or reuse the customer before saving the account; enforce unique national codes.
+
+[ ] 02  fix: persist wallet transactions through the owning relationship
+        Keep the account transaction collection mutable and save ledger rows explicitly.
+
+[ ] 03  fix: map debit requests by public account number
+        Add the request converter, use the UUID string consistently, and return 404 for unknown accounts.
+
+[ ] 04  fix: calculate balances from transaction direction
+        Use exact decimal money, credit/debit directions, public account numbers, and customer-scoped queries.
+
+[ ] 05  fix: enforce wallet transaction rules
+        Require KYC, restrict savings accounts to deposits, and reject nonpositive or unaffordable debits.
+        Add account ownership authorization after choosing the caller identity/provider model.
+
+[ ] 06  fix: make wallet writes idempotent and concurrency-safe
+        Require request IDs for credit and debit, return prior results on retries, and serialize balance checks.
+
+[ ] 07  fix: enforce the five-per-day balance inquiry limit
+        Count atomically per customer and day, define the time zone/reset, and test the boundary.
+
+[ ] 08  feat: return filtered customer transaction history
+        Apply customer, direction, and amount filters with stable ordering and pagination.
+
+[ ] 09  fix: connect KYC events to transaction eligibility
+        Inject services, enable the configured Kafka listener, dispatch identifiers correctly, and reject unverified customers.
+
+FOLLOW-UP RISKS ALSO LISTED IN THE REVIEW
+-----------------------------------------
+[ ] 10  fix: persist notification work reliably
+        Replace fire-and-forget database writes with a durable delivery workflow and observable status.
+
+[ ] 11  fix: expose credit response fields to JSON
+        Add accessors or use a response record and verify the serialized API response.
+
+[ ] 12  chore: configure durable database storage and schema migrations
+        Replace development-only in-memory H2/create-drop settings for deployment.
+
+[ ] 13  chore: align Redis configuration with the cache implementation
+        Configure Redis as intended or remove unused Redis cache settings/dependencies.
+
+NOTES
+-----
+- Keep each numbered item in its own commit so the review can be presented one change at a time.
+- Item 05 ownership checks depend on an agreed authentication/identity integration.
+- The PDF's transaction-history example expects 50,000 for five 10,000 deposits filtered by a 6,000 minimum; update the stale 75,000 test expectation.

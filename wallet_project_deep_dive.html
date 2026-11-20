@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Wallet Project Deep Dive</title>
+<style>
+@page { size: A4; margin: 17mm 16mm 18mm; }
+* { box-sizing: border-box; }
+body { font-family: "Segoe UI", Arial, sans-serif; color: #192536; font-size: 10.2pt; line-height: 1.48; }
+h1, h2, h3 { color: #123b63; line-height: 1.2; page-break-after: avoid; }
+h1 { font-size: 30pt; margin: 0 0 10pt; }
+h2 { font-size: 19pt; border-bottom: 1px solid #c9d7e5; padding-bottom: 5pt; margin-top: 24pt; }
+h3 { font-size: 13pt; margin-top: 16pt; }
+p { margin: 6pt 0 9pt; }
+ul, ol { padding-left: 21pt; margin-top: 5pt; }
+li { margin: 3pt 0; }
+table { width: 100%; border-collapse: collapse; margin: 9pt 0 13pt; font-size: 9.2pt; page-break-inside: avoid; }
+th { color: white; background: #174a74; text-align: left; }
+th, td { border: 1px solid #ccd7e2; padding: 6pt 7pt; vertical-align: top; }
+tr:nth-child(even) td { background: #f3f7fa; }
+code { font-family: Consolas, "Courier New", monospace; font-size: 9pt; color: #173e62; background: #edf3f8; padding: 1px 3px; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 10pt; background: #f1f5f8; border-left: 3px solid #4385b4; font: 8.8pt/1.4 Consolas, monospace; page-break-inside: avoid; }
+.cover { min-height: 238mm; display: flex; flex-direction: column; justify-content: center; page-break-after: always; }
+.eyebrow { color: #477ba2; text-transform: uppercase; letter-spacing: 2px; font-weight: 700; font-size: 9pt; }
+.subtitle { color: #496176; font-size: 15pt; max-width: 145mm; }
+.coverbox, .note, .warning, .good { padding: 10pt 12pt; margin: 11pt 0; border-radius: 4px; page-break-inside: avoid; }
+.coverbox, .note { background: #eef5fa; border-left: 4px solid #3979a6; }
+.warning { background: #fff4e5; border-left: 4px solid #d58b24; }
+.good { background: #edf7f0; border-left: 4px solid #38895a; }
+.small { font-size: 8.7pt; color: #536779; }
+.flow { font-family: Consolas, monospace; background: #f1f5f8; border: 1px solid #ccd7e2; padding: 12pt; text-align: center; line-height: 1.8; page-break-inside: avoid; }
+.toc li { margin: 5pt 0; }
+.severity { font-weight: 700; color: #9b3c19; }
+.pagebreak { page-break-before: always; }
+a { color: #165d8c; }
+</style>
+</head>
+<body>
+<section class="cover">
+  <div class="eyebrow">Repository guide · interview study edition</div>
+  <h1>Wallet Project<br>Deep Dive</h1>
+  <p class="subtitle">A clear, code-based explanation of the wallet service: its intended business rules, architecture, request flows, frameworks, tests, and the gaps a reviewer should notice.</p>
+  <div class="coverbox"><strong>How to read this guide</strong><br>This guide separates what the project is trying to do from what the checked-in code currently does. That distinction matters: several business rules are described in the README but are not fully implemented.</div>
+  <p class="small">Repository: Java 21 · Spring Boot 3.3.3 · Maven · source reviewed from this checkout</p>
+</section>
+
+<h2>1. The project in two minutes</h2>
+<p>This repository is a sample backend for a bank wallet. It models customers, accounts, and transactions, exposes HTTP endpoints for opening an account and moving or reading money, and includes early scaffolding for customer identity verification (KYC) and notifications.</p>
+<p>The code is organized in layers. The REST controller receives HTTP requests. It converts request-shaped objects into application commands or queries. <code>WalletService</code> contains most wallet behavior and calls Spring Data repositories. JPA entities represent database rows and their relationships. Spring Boot starts the application and reads configuration from YAML.</p>
+<div class="flow">HTTP client → WalletController → request converter → WalletService → JPA repository → H2 database<br>                                                     ↘ notification / KYC scaffolding</div>
+<div class="warning"><strong>Important snapshot:</strong> this is an interview sample or work-in-progress, not a complete production wallet. The README describes intended rules, but account creation, transaction persistence, balance arithmetic, KYC enforcement, transaction search, and the daily limit all have implementation gaps described below.</div>
+
+<h2>2. Business model and promised rules</h2>
+<p>The README states these requirements:</p>
+<ul>
+  <li>A customer may own several accounts; each account has one owner.</li>
+  <li>Account kinds are savings and checking. Savings should allow deposits only; checking should allow deposits and withdrawals.</li>
+  <li>An account can have many transactions. A transaction is a deposit or withdrawal.</li>
+  <li>A customer must pass KYC before transacting.</li>
+  <li>A customer may read the full account balance five times per day.</li>
+</ul>
+<p>In the code, <code>Customer</code>, <code>Account</code>, and <code>Transaction</code> are JPA entities. Their intended relationships are:</p>
+<div class="flow">Customer 1 ───── many Account 1 ───── many Transaction</div>
+<table>
+  <tr><th>Type</th><th>Meaning in this code</th><th>Useful details</th></tr>
+  <tr><td><code>Customer</code></td><td>The person who owns an account.</td><td>Stores national code, name, mobile, age, verified flag, and deleted flag. It inherits a generated numeric database ID.</td></tr>
+  <tr><td><code>Account</code></td><td>A wallet account owned by a customer.</td><td>Has a UUID-like public number, account type, owner reference, issue date, and a set of transactions. The database ID is separate from the public number.</td></tr>
+  <tr><td><code>Transaction</code></td><td>A record associated with one account.</td><td>Stores request ID, direction text, and a <code>Double</code> amount. The request ID has a database uniqueness constraint.</td></tr>
+  <tr><td><code>Message</code></td><td>A basic notification record.</td><td>Stores text, phone number, and a pending/sent/failed status. Current code only creates a pending row.</td></tr>
+</table>
+<p><code>AbstractEntity</code> supplies a generated <code>Long id</code> to the entities that extend it. Lombok's <code>@Data</code> creates getters, setters, <code>equals</code>, <code>hashCode</code>, and <code>toString</code> at compile time. Those generated methods are convenient for simple DTOs, but using them on JPA entities with bidirectional relationships deserves care because printing or comparing entities can walk relationships unexpectedly.</p>
+
+<h2>3. Repository map</h2>
+<table>
+  <tr><th>Location</th><th>What it contains</th></tr>
+  <tr><td><code>src/main/java/.../WebApplication.java</code></td><td>Spring Boot entry point.</td></tr>
+  <tr><td><code>application/wallet</code></td><td>Wallet service, account and transaction entities, repository, DTOs, commands, and queries.</td></tr>
+  <tr><td><code>application/customer</code></td><td>Customer entity and repository; <code>kyc</code> contains verification service logic.</td></tr>
+  <tr><td><code>application/common</code></td><td>Shared entity base and notification/message persistence.</td></tr>
+  <tr><td><code>infrastructure/api</code></td><td>REST controller and HTTP request classes/converters.</td></tr>
+  <tr><td><code>infrastructure/kafka</code></td><td>KYC event listener scaffold.</td></tr>
+  <tr><td><code>infrastructure/config</code></td><td>In-memory Spring cache manager bean.</td></tr>
+  <tr><td><code>src/main/resources/application.yml</code></td><td>Database, cache, Redis, Kafka, server, and JPA settings.</td></tr>
+  <tr><td><code>src/test/java</code></td><td>JUnit 5 and Spring/Mockito tests for the service and controller.</td></tr>
+  <tr><td><code>pom.xml</code></td><td>Java 21, Spring Boot dependencies, and Maven build setup.</td></tr>
+  <tr><td><code>dc.yml</code></td><td>Optional Docker Compose definitions for ZooKeeper, Kafka, and Redis.</td></tr>
+</table>
+
+<h2>4. Architecture and useful patterns</h2>
+<h3>Layered application</h3>
+<p>The controller is the HTTP boundary. It should translate protocol details into application inputs and translate results into HTTP responses. The service is the use-case layer: create an account, credit an account, debit an account, or calculate balances. Repositories hide database access behind interfaces. The entities describe persisted domain data.</p>
+<h3>Request objects, commands, queries, and DTOs</h3>
+<p>A request object describes the incoming JSON shape, such as <code>CreateAccountRequest</code>. A command describes an action the application should perform, such as <code>CreateAccountCommand</code>. A query describes information to retrieve, such as <code>AccountBalanceQuery</code>. A DTO is a response-shaped object sent back to the caller. Keeping these types separate can protect internal code from HTTP-specific details, though the current project has some mismatches between them.</p>
+<h3>Converters and dependency injection</h3>
+<p><code>CreateAccountRequestConverter</code> and <code>CreaditAccountRequestConverter</code> implement Spring's <code>Converter&lt;S,T&gt;</code> interface. Spring discovers them as components; the controller asks <code>ConversionService</code> to transform request objects to commands. This keeps field mapping outside the controller method. The credit converter's class name contains a spelling error, and it currently does not map a request ID.</p>
+<h3>Repositories and ORM relationships</h3>
+<p><code>AccountRepository</code> and <code>CustomerRepository</code> extend Spring Data JPA's <code>JpaRepository</code>. Spring supplies common methods such as <code>save</code>, <code>findAll</code>, and <code>findById</code>; method names such as <code>findByNumber</code> or <code>findByNationalCode</code> are parsed into queries.</p>
+<p>JPA relationships have an owning side. Here, <code>Transaction.account</code> is the owning side because it holds the foreign key; <code>Account.transactions</code> is marked <code>mappedBy = "account"</code>, so it is the inverse side. Merely adding a transaction to the account's collection and saving the account does not automatically persist that transaction: there is no cascade configured and no transaction repository is used.</p>
+<h3>Transactions and asynchronous work</h3>
+<p><code>@Transactional</code> on credit/debit asks Spring to wrap each method's database work in a transaction. That helps make related database writes atomic, but it does not repair missing cascade configuration or the immutable collection problem. <code>NotificationService</code> uses <code>CompletableFuture.runAsync</code>, which schedules work on the default async pool. That task is not part of the caller's database transaction and only saves a pending message; it does not send an SMS.</p>
+<h3>Commands are not automatically CQRS</h3>
+<p>The project uses command and query class names, which resembles the vocabulary of CQRS (separating writes from reads). It remains a single Spring application with one service and shared repositories; there is no separate read store, event-sourced model, or independent command/query pipeline.</p>
+
+<h2>5. HTTP endpoints and request flow</h2>
+<p>The controller has <code>@RequestMapping("/wallet")</code>. YAML also sets the servlet context path to <code>/wallet/</code>. These prefixes may combine, so the configured application route is likely under <code>/wallet/wallet</code>. Confirm the actual URL against the running server; the tests address <code>/wallet/...</code> directly and may not exercise the configured external context path.</p>
+<table>
+  <tr><th>Action</th><th>Controller input</th><th>Service behavior in current source</th></tr>
+  <tr><td><code>POST /wallet/create</code></td><td>JSON: nationalCode, name, mobile, type.</td><td>Builds Account and Customer objects, saves only Account, returns account number. Since the owner is a new unsaved Customer and no cascade is configured, persistence is likely to fail.</td></tr>
+  <tr><td><code>POST /wallet/credit</code></td><td>JSON: accountNumber (string), amount.</td><td>Finds by public account number, adds a credit transaction to an account collection, schedules a pending notification, saves account, returns account number and amount.</td></tr>
+  <tr><td><code>POST /wallet/debit</code></td><td>JSON: requestId, accountNumber (Long), amount.</td><td>Uses <code>findById</code> with the supplied number, then adds a debit transaction. This differs from credit, which searches by public UUID string.</td></tr>
+  <tr><td><code>POST /wallet/balance?customerId=…</code></td><td>Customer ID as query parameter.</td><td>Applies a process-memory request counter, then loads every account and filters in Java. It sums all transaction amounts without reversing debits.</td></tr>
+  <tr><td><code>POST /wallet/transactions?customerId=…</code></td><td>Customer ID as query parameter.</td><td>Calls <code>listTransactions</code>, which currently always returns an empty list.</td></tr>
+</table>
+<p>The request bodies are plain Java objects with Lombok-generated accessors. They have no Bean Validation annotations, so amount, IDs, names, and account type are not formally validated at the HTTP boundary.</p>
+
+<h2>6. Follow the main use cases</h2>
+<h3>A. Create an account</h3>
+<ol>
+  <li>Spring MVC deserializes JSON into <code>CreateAccountRequest</code>.</li>
+  <li>The controller asks the conversion service for a <code>CreateAccountCommand</code>.</li>
+  <li><code>WalletService.createAccount</code> creates a new <code>Account</code> and a new <code>Customer</code>, copies customer details, attaches the customer as owner, sets the type, and assigns a UUID string.</li>
+  <li>It calls <code>accountRepository.save(account)</code> and returns the account number.</li>
+</ol>
+<div class="warning">The customer is never saved through <code>CustomerRepository</code>, and the owner relationship has no <code>cascade = PERSIST</code>. JPA normally rejects saving an account that references a transient, unsaved customer. Account type is also parsed with <code>AccountType.valueOf</code>, so the accepted value must match the enum spelling exactly; the enum says <code>SAVING</code>, while the README says <code>SAVINGS</code>.</div>
+<h3>B. Credit (deposit)</h3>
+<p>The service finds an account using the public string number. It creates a <code>Transaction</code> whose direction is the literal <code>"credit"</code>, adds it to <code>account.getTransactions()</code>, schedules a notification, saves the account, and returns a small DTO.</p>
+<p>There are three major complications. First, the create path sets transactions to <code>Set.of()</code>, an immutable set, so adding the first transaction throws <code>UnsupportedOperationException</code>. Second, the transaction collection is the inverse side of the JPA relation and no cascade is configured, so a mutable collection alone would still not guarantee the transaction gets stored. Third, <code>CreditAccountRequest</code> has no request ID, so the unique transaction key cannot provide idempotency for this endpoint.</p>
+<h3>C. Debit (withdrawal)</h3>
+<p>The debit endpoint receives an account number typed as <code>Long</code>, but the account's public number is a UUID-like <code>String</code>. The service then calls <code>findById</code>, which searches the database primary key, not the public account number. A valid public account number therefore cannot be represented by this request shape. The code also does not check account type, customer KYC status, sufficient funds, positive amount, or ownership of a request.</p>
+<h3>D. Balance inquiry</h3>
+<p>The controller uses a static map keyed by customer ID. The service loads all accounts, selects accounts whose owner's database ID matches, sums transaction amounts, and returns account ID plus amount. This is simple to read, but loads the whole account table and uses an unfiltered sum. Since both credit and debit amounts are added as positive values, the calculated result is a gross movement total, not a net wallet balance.</p>
+<h3>E. Transaction list</h3>
+<p>The query object has fields for customer, lower amount, upper amount, and direction. These fields suggest intended filters. No repository query or filtering code exists yet; the service returns <code>Collections.emptyList()</code>. The controller only sets customer ID, so even a future implementation would need a way to receive the other filters.</p>
+
+<h2>7. KYC and notifications</h2>
+<h3>KYC verification scaffold</h3>
+<p><code>CustomerVerificationService</code> can look up a customer by database ID or national code, set the verified flag, and save it. The ID path throws a generic runtime exception when no customer exists. The national-code path dereferences the result without checking for null. Its repository field is not injected, so normal Spring-created instances would have a null repository.</p>
+<p><code>CustomerVerificationListener</code> contains an event class and handler for identifiers of type <code>ID</code> or <code>NATIONAL_CODE</code>. The <code>@KafkaListener</code> annotation is commented out, and the verification service field is also not injected. The switch cases have no <code>break</code> or arrow syntax: an <code>ID</code> event falls through into the national-code handler. Exceptions are caught and logged, which can hide a failed event from the caller unless monitoring looks at those logs.</p>
+<p>Most importantly, wallet credit/debit does not check <code>Customer.isVerified</code>. The README's KYC-before-transactions rule is not enforced by the current transaction use cases.</p>
+<h3>Notification scaffold</h3>
+<p><code>NotificationService.send</code> asynchronously builds a <code>Message</code> with status <code>PENDING</code> and saves it. There is no SMS provider or consumer that marks it sent or failed. The <code>throws RuntimeException</code> declaration does not report exceptions from the separate asynchronous task to the original caller.</p>
+
+<h2>8. Configuration and runtime</h2>
+<table>
+  <tr><th>Setting / dependency</th><th>What it means here</th></tr>
+  <tr><td>Java 21, Spring Boot 3.3.3</td><td>Build target and application framework, declared in <code>pom.xml</code>.</td></tr>
+  <tr><td>Spring Web</td><td>REST controllers and JSON HTTP handling.</td></tr>
+  <tr><td>Spring Data JPA + Hibernate</td><td>Entity persistence and generated repository implementations.</td></tr>
+  <tr><td>H2, <code>jdbc:h2:mem:keefDB</code></td><td>In-memory database. Data is temporary and disappears when the process exits.</td></tr>
+  <tr><td><code>ddl-auto: create-drop</code></td><td>Hibernate creates schema on startup and drops it at shutdown; suitable for a sample, not a durable production database.</td></tr>
+  <tr><td><code>spring.cache.type: simple</code></td><td>Uses a simple in-memory cache. <code>AppConfig</code> also defines a <code>ConcurrentMapCacheManager</code>. No cache annotations or actual cache use appear in this code.</td></tr>
+  <tr><td>Redis starter and Redis connection settings</td><td>Dependency/configuration are present, and <code>dc.yml</code> can start Redis. The selected cache type is simple, so Redis is not the configured Spring cache backend in this snapshot.</td></tr>
+  <tr><td>Kafka dependency and Compose broker</td><td>Kafka listener code exists, but its listener annotation is disabled. Kafka is not currently processing KYC events through that handler.</td></tr>
+  <tr><td>Springdoc OpenAPI UI</td><td>API documentation dependency is included. Availability depends on the running application and generated endpoint configuration.</td></tr>
+  <tr><td>Port 8080, context path <code>/wallet/</code></td><td>Server settings; the controller adds another <code>/wallet</code> mapping segment.</td></tr>
+</table>
+<p><code>dc.yml</code> starts ZooKeeper, a Kafka broker, and Redis. The simple wallet flow is configured to use H2 and does not need durable infrastructure to illustrate its basic structure. Kafka and Redis integration would need their runtime settings and application code aligned before they are useful.</p>
+
+<h2>9. Tests: what they cover and what they do not</h2>
+<p><code>WalletServiceTest</code> uses Spring's test context and Mockito mocks for repositories and notifications. One test constructs transactions and expects a balance of 50,000, but it does not test the five-per-day limit despite its name. A second test sets up customer and amount/direction data and expects filtered transaction results, while the implementation currently returns an empty list; as written, that expectation appears inconsistent with the service.</p>
+<p><code>WalletControllerTest</code> uses MockMvc to send balance requests. It aims to check five allowed calls, a sixth rejected call, different customers, and concurrent calls. The production counter is static, never reset per test/day, and implemented with a non-thread-safe <code>HashMap</code>; the concurrency test also updates a shared integer without synchronization. Test execution order can affect cases that reuse the same customer ID.</p>
+<div class="note"><strong>Good review habit:</strong> distinguish test intention from test evidence. Read the assertion, check whether setup isolates state, and compare the expected behavior with the exact implementation. A passing test suite alone cannot prove a business rule when the test does not exercise that rule.</div>
+
+<h2>10. Highest-value review findings</h2>
+<table>
+  <tr><th>Priority</th><th>Finding</th><th>Impact / direction to fix</th></tr>
+  <tr><td class="severity">Critical</td><td>Account creation attaches a new unsaved Customer but saves only Account; no persistence cascade is configured.</td><td>Creation can fail with a transient-object persistence error. Persist/reuse the customer explicitly and define ownership/duplicate-customer behavior.</td></tr>
+  <tr><td class="severity">Critical</td><td>Account transaction set is initialized with immutable <code>Set.of()</code>, then credit/debit call <code>add</code>.</td><td>First mutation can fail immediately. Use a mutable collection and persist transactions through the owning side or a deliberate cascade.</td></tr>
+  <tr><td class="severity">Critical</td><td>Debit uses numeric database ID; credit uses UUID public account number.</td><td>API identity is inconsistent and debit can target the wrong concept. Standardize the public identifier and type across request, service, repository, and response.</td></tr>
+  <tr><td class="severity">High</td><td>Balance sums positive values for both directions.</td><td>Balance is not net money. Use a typed direction and signed arithmetic, or store resulting balance with a carefully defined ledger strategy.</td></tr>
+  <tr><td class="severity">High</td><td>README business rules are not enforced: KYC, savings-only deposits, and withdrawal funds/type rules are absent.</td><td>Invalid operations may be accepted. Put the checks in the use case and test each allowed and rejected path.</td></tr>
+  <tr><td class="severity">High</td><td>Rate limit allows the sixth request and blocks on the seventh; it has no daily reset, and a static HashMap is unsafe for concurrent requests.</td><td>Behavior contradicts the stated rule. Use an atomic, time-windowed shared limiter keyed by customer, and define reset/time-zone semantics.</td></tr>
+  <tr><td class="severity">High</td><td>Transaction listing is a stub; service test expects filtered results.</td><td>Endpoint always returns empty data. Define filter semantics, implement a repository/service query, and add tests for combinations and boundaries.</td></tr>
+  <tr><td class="severity">High</td><td>KYC listener is disabled; service dependency is not injected; ID case falls through; KYC is not checked by wallet operations.</td><td>Events will not be consumed and verification cannot safely update customers. Enable/configure listener, inject dependencies, fix dispatch, and enforce verified status in use cases.</td></tr>
+  <tr><td>Medium</td><td>Amounts use <code>Double</code>; inputs are not validated; unknown accounts can become null dereferences; errors have no consistent API mapping.</td><td>Floating point is risky for money and client failures may return unclear errors. Prefer <code>BigDecimal</code>, validation, domain errors, and centralized HTTP error responses.</td></tr>
+  <tr><td>Medium</td><td>Credit request omits request ID even though transaction uniqueness suggests idempotency; notification only stores PENDING asynchronously.</td><td>Retries can duplicate deposits, and callers may believe a message was delivered when it was only queued. Define idempotency and delivery/outbox behavior.</td></tr>
+  <tr><td>Medium</td><td>All-account balance query loads all accounts; H2 is in-memory with create-drop; cache/Redis/Kafka setup is not fully connected.</td><td>Scalability and persistence are limited. Use filtered repository queries and production-like durable configuration when requirements call for them.</td></tr>
+</table>
+
+<h2>11. How to talk through this in an interview</h2>
+<p>A clear opening summary could be:</p>
+<div class="good">“This is a Java 21 Spring Boot wallet API organized into a REST adapter, an application service, and JPA entities/repositories. It models customer → account → transaction, with additional KYC and notification scaffolding. I would first clarify whether we are discussing intended requirements or the current implementation, because several stated rules are not enforced yet.”</div>
+<p>When asked to review or change code:</p>
+<ol>
+  <li>Restate the expected behavior and ask about ambiguous details: account identifier, debit representation, transaction direction, KYC failure behavior, and the exact daily window.</li>
+  <li>Trace one request end to end: controller input → conversion → service → repository/entity → response.</li>
+  <li>Identify the smallest correctness issue with concrete evidence. For example, saving an account whose owner is an unsaved customer or adding to <code>Set.of()</code>.</li>
+  <li>Say how you would test it: a focused service test for successful persistence and invalid paths, plus an API test for request/response mapping.</li>
+  <li>Implement in small steps, narrating trade-offs. For money, mention decimal representation; for retries, explain idempotency; for rate limits, explain concurrency and shared state.</li>
+</ol>
+<p>A sensible first-change order is: make account creation and transaction persistence correct; align public identifiers; enforce and test wallet rules; implement transaction search; then improve rate limiting, validation, errors, and integration infrastructure.</p>
+
+<h2>12. Run and explore the project</h2>
+<p>From the repository root on Windows, the Maven wrapper commands are:</p>
+<pre>.\mvnw.cmd spring-boot:run   # start the app
+.\mvnw.cmd test               # compile and run the JUnit tests
+.\mvnw.cmd clean package     # clean and create the packaged application</pre>
+<p>Use a Java 21 JDK. The configured database is in-memory H2. The server port is 8080. The URL path includes the context path and controller mapping described earlier. Optional containers are declared in <code>dc.yml</code> and can be started with <code>docker compose -f dc.yml up -d</code>; stop them with <code>docker compose -f dc.yml down</code>.</p>
+<p class="small">Commands are documented from project configuration and were not run while preparing this guide. The source is a snapshot; check current runtime behavior before relying on an endpoint or infrastructure integration.</p>
+
+<h2>13. Quick glossary</h2>
+<table>
+  <tr><th>Term</th><th>Plain-language meaning</th></tr>
+  <tr><td>Spring Boot</td><td>Framework that starts the app and wires its web, database, and other components.</td></tr>
+  <tr><td>Dependency injection</td><td>Spring creates an object and supplies the other objects it needs.</td></tr>
+  <tr><td>JPA / Hibernate</td><td>Tools that map Java objects to relational database rows and manage database operations.</td></tr>
+  <tr><td>Repository</td><td>An interface used to load and save data without writing basic SQL in the service.</td></tr>
+  <tr><td>DTO</td><td>A simple object shaped for data entering or leaving a layer.</td></tr>
+  <tr><td>Idempotency</td><td>Repeating the same request does not apply the money movement more than once.</td></tr>
+  <tr><td>Cache</td><td>Temporary stored data used to avoid recalculating or reloading it; it is different from a rate limiter.</td></tr>
+  <tr><td>Kafka listener</td><td>Code that reacts to messages from a Kafka topic; here the listener annotation is commented out.</td></tr>
+  <tr><td>Outbox</td><td>A durable database record written with the business change, then safely delivered to another system.</td></tr>
+</table>
+<p class="small">Prepared from the repository files available in this checkout, including README, pom.xml, YAML configuration, Java source, and tests. Findings describe visible source behavior and may change as the project evolves.</p>
+</body>
+</html>

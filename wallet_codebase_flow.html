@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>How the Wallet Codebase Fits Together</title>
+<style>
+@page { size: A4; margin: 17mm 16mm; }
+* { box-sizing: border-box; }
+body { font-family: "Segoe UI", Arial, sans-serif; color: #1b2938; font-size: 10.2pt; line-height: 1.5; }
+h1,h2,h3 { color: #123b63; page-break-after: avoid; }
+h1 { font-size: 29pt; line-height: 1.15; margin: 5pt 0 10pt; }
+h2 { font-size: 18pt; border-bottom: 1px solid #c9d7e5; padding-bottom: 5pt; margin-top: 22pt; }
+h3 { font-size: 12.5pt; margin: 15pt 0 5pt; }
+p { margin: 6pt 0 9pt; }
+ul,ol { padding-left: 21pt; margin-top: 4pt; }
+li { margin: 3pt 0; }
+code { font: 9pt Consolas, monospace; color: #163e60; background: #edf3f8; padding: 1px 3px; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f1f5f8; border-left: 3px solid #4385b4; padding: 9pt 11pt; font: 8.4pt/1.4 Consolas, monospace; page-break-inside: avoid; }
+table { width: 100%; border-collapse: collapse; margin: 8pt 0 12pt; font-size: 9pt; page-break-inside: avoid; }
+th { background: #174a74; color: white; text-align: left; }
+th,td { border: 1px solid #ccd7e2; padding: 6pt 7pt; vertical-align: top; }
+tr:nth-child(even) td { background: #f3f7fa; }
+.cover { min-height: 240mm; display: flex; flex-direction: column; justify-content: center; page-break-after: always; }
+.eyebrow { color: #477ba2; text-transform: uppercase; letter-spacing: 1.8px; font-weight: bold; font-size: 9pt; }
+.subtitle { color: #4c6276; font-size: 14pt; max-width: 145mm; }
+.diagram { font: 9.2pt/2 Consolas, monospace; text-align: center; background: #eff5f9; border: 1px solid #c8d7e5; padding: 11pt; page-break-inside: avoid; }
+.note,.caution,.good { padding: 9pt 11pt; margin: 10pt 0; page-break-inside: avoid; }
+.note { background: #eef5fa; border-left: 4px solid #3979a6; }
+.caution { background: #fff4e5; border-left: 4px solid #d58b24; }
+.good { background: #edf7f0; border-left: 4px solid #38895a; }
+.small { font-size: 8.6pt; color: #596d7e; }
+</style>
+</head>
+<body>
+<section class="cover">
+  <div class="eyebrow">Code walkthrough · Wallet service</div>
+  <h1>How the Pieces Fit<br>in This Codebase</h1>
+  <p class="subtitle">A step-by-step guide to the request, application, persistence, and response flow, with examples from the actual Java classes.</p>
+  <div class="note"><strong>One sentence:</strong> the web layer receives input, the application service performs a use case, Spring Data repositories talk to JPA entities, and the controller returns a result. KYC and notifications are separate supporting flows, and both are incomplete in this snapshot.</div>
+  <p class="small">Project: Java 21 · Spring Boot 3.3.3 · Spring MVC · Spring Data JPA · H2</p>
+</section>
+
+<h2>1. The big picture</h2>
+<div class="diagram">HTTP request<br>↓<br>WalletController<br>↓<br>request converter (for some endpoints)<br>↓<br>command or query object<br>↓<br>WalletService<br>↓<br>JPA repository ⇄ JPA entity ⇄ database<br>↓<br>response DTO or other response value</div>
+<p>This is a layered design. Each layer has a different job:</p>
+<table>
+<tr><th>Piece</th><th>Its job</th><th>Example in this project</th></tr>
+<tr><td>HTTP controller</td><td>Accept HTTP input and return an HTTP response.</td><td><code>WalletController</code></td></tr>
+<tr><td>Request converter</td><td>Copy data from a web request type into an application input type.</td><td><code>CreateAccountRequestConverter</code></td></tr>
+<tr><td>Command / query</td><td>Carry the input for an action or a read operation.</td><td><code>CreateAccountCommand</code>, <code>AccountBalanceQuery</code></td></tr>
+<tr><td>Application service</td><td>Coordinate the use case and its business decisions.</td><td><code>WalletService</code></td></tr>
+<tr><td>Repository</td><td>Provide data access methods.</td><td><code>AccountRepository</code></td></tr>
+<tr><td>Entity</td><td>Represent persisted data and relationships.</td><td><code>Account</code>, <code>Transaction</code></td></tr>
+<tr><td>Response DTO</td><td>Shape result data returned to the caller.</td><td><code>DebitAccountDTO</code>, <code>AccountBalanceDTO</code></td></tr>
+</table>
+<div class="caution"><strong>Important:</strong> the diagram is a useful mental model, but not every route follows every box. Create and credit use converters. Debit asks for a converter that is not present. Balance and transaction listing build query objects directly inside the controller.</div>
+
+<h2>2. Start at the HTTP boundary: WalletController</h2>
+<p><code>WalletController</code> is annotated with <code>@RestController</code>, so Spring MVC exposes its methods as HTTP endpoints and handles JSON request bodies. Its class mapping is <code>/wallet</code>. Methods use <code>@PostMapping</code> for create, credit, debit, balance, and transactions.</p>
+<pre>@RestController
+@RequestMapping("/wallet")
+public class WalletController {
+    @PostMapping("/create")
+    public ResponseEntity&lt;?&gt; createAccount(
+            @RequestBody CreateAccountRequest request) {
+        CreateAccountCommand command =
+                conversionService.convert(request, CreateAccountCommand.class);
+        return ResponseEntity.ok(walletService.createAccount(command));
+    }
+}</pre>
+<p>Here Spring turns the request JSON into a Java request object. The controller then hands off the work to the service and wraps the returned value in an HTTP 200 response.</p>
+<p>Example JSON shape for account creation:</p>
+<pre>{
+  "nationalCode": "0012345678",
+  "firstName": "Sara",
+  "lastName": "Example",
+  "mobile": "09120000000",
+  "type": "CHECKING"
+}</pre>
+<p>This is the request shape, not a guarantee that creation succeeds. The service currently builds a new owner but does not save that customer or configure cascading persistence.</p>
+<div class="note"><strong>URL detail:</strong> <code>WalletController</code> contributes <code>/wallet</code>, and <code>application.yml</code> sets the server context path to <code>/wallet/</code>. Together they may make the external URL <code>/wallet/wallet/create</code>. The controller tests call <code>/wallet/...</code> through MockMvc, so verify the exact deployed URL in a running app.</div>
+
+<h2>3. Converters: translating web input into application input</h2>
+<p>A request object belongs to the web boundary. A command or query belongs to the application's use-case boundary. The converter copies fields between these types.</p>
+<pre>@Component
+public class CreateAccountRequestConverter
+        implements Converter&lt;CreateAccountRequest, CreateAccountCommand&gt; {
+    @Override
+    public CreateAccountCommand convert(CreateAccountRequest source) {
+        CreateAccountCommand command = new CreateAccountCommand();
+        command.setNationalCode(source.getNationalCode());
+        command.setType(source.getType());
+        command.setFirstName(source.getFirstName());
+        command.setLastName(source.getLastName());
+        command.setMobile(source.getMobile());
+        return command;
+    }
+}</pre>
+<p><code>@Component</code> lets Spring discover the converter. The controller uses Spring's <code>ConversionService</code> to locate the matching converter. This keeps field-copying code out of the endpoint method.</p>
+<p>Credit uses <code>CreaditAccountRequestConverter</code> (the class name has a typo). It copies account number and amount into <code>CreditAccountCommand</code>, but the request has no <code>requestId</code>, so that value never reaches the service.</p>
+<div class="caution"><strong>Debit difference:</strong> the controller calls <code>conversionService.convert(request, DebitAccountCommand.class)</code>, but there is no converter from <code>DebitAccountRequest</code> to <code>DebitAccountCommand</code> in the repository. That conversion is likely to fail at runtime until a converter is added or the controller maps the fields directly.</div>
+
+<h2>4. Commands and queries: plain input containers</h2>
+<p>These classes are not controllers and usually do not perform work. They carry typed values to the service:</p>
+<pre>// command: asks the application to do something
+public class CreditAccountCommand {
+    private String requestId;
+    private String accountNumber;
+    private Double amount;
+}
+
+// query: asks the application to return information
+public class AccountBalanceQuery {
+    Long customerId;
+}</pre>
+<p>A <strong>command</strong> represents a change, such as creating, crediting, or debiting an account. A <strong>query</strong> represents a read, such as getting a customer's balance. The project uses this vocabulary, but it is still one application service and one database; it is not a separate CQRS system.</p>
+<p>Balance is an example where the controller creates the query itself:</p>
+<pre>AccountBalanceQuery query = new AccountBalanceQuery();
+query.setCustomerId(Long.valueOf(customerId));
+return ResponseEntity.ok(walletService.accountBalance(query));</pre>
+
+<h2>5. WalletService: where a use case is coordinated</h2>
+<p><code>WalletService</code> is marked <code>@Service</code>. It receives an <code>AccountRepository</code> and a <code>NotificationService</code> through Lombok's <code>@AllArgsConstructor</code> constructor. The controller does not write database code itself; it delegates to this service.</p>
+<p>A simplified view of crediting is:</p>
+<pre>Account account = accountRepository.findByNumber(command.getAccountNumber());
+Transaction transaction = new Transaction(
+        command.getRequestId(), account, "credit", command.getAmount());
+account.getTransactions().add(transaction);
+notificationService.send(account.getOwner().getMobile(), "deposit ...");
+accountRepository.save(account);
+return new CreditAccountDTO(account.getNumber(), transaction.getAmount());</pre>
+<p>This shows the service coordinating lookup, transaction construction, notification request, save, and result. <code>@Transactional</code> on credit/debit asks Spring to run the method's database operations inside a transaction.</p>
+<div class="caution"><strong>Current behavior caveat:</strong> account creation sets transactions to <code>Set.of()</code>, an immutable set. Calling <code>add</code> can throw. Also, <code>Account.transactions</code> is the inverse side of the JPA relationship and has no cascade configured; saving the account alone does not necessarily save a new transaction.</div>
+
+<h2>6. Repository and entity: how persistence is represented</h2>
+<p><code>AccountRepository</code> extends <code>JpaRepository&lt;Account, Long&gt;</code>. Spring Data implements common methods and derives custom queries from method names:</p>
+<pre>public interface AccountRepository extends JpaRepository&lt;Account, Long&gt; {
+    Account findByNumber(String number);
+}</pre>
+<p><code>findByNumber</code> searches the account's public <code>number</code> field. <code>findById</code> searches the inherited database primary key. They are different identifiers.</p>
+<p><code>Account</code> and <code>Transaction</code> show the data relationship:</p>
+<pre>// Account.java
+@OneToMany(mappedBy = "account")
+private Set&lt;Transaction&gt; transactions;
+
+// Transaction.java
+@ManyToOne(optional = false)
+@JoinColumn(name = "account_id")
+private Account account;</pre>
+<p>The foreign key lives on <code>Transaction.account</code>. That makes this the owning side. <code>mappedBy = "account"</code> says the account's collection mirrors the relationship field; it does not own the database foreign key. The account's owner is another relationship: <code>@ManyToOne</code> to <code>Customer</code>.</p>
+<div class="caution"><strong>Identifier mismatch in debit:</strong> the credit path uses <code>findByNumber(String)</code>, while debit calls <code>findById(Long)</code>. The account number generated in this project is a UUID string, so debit's <code>Long accountNumber</code> does not match that public identifier.</div>
+
+<h2>7. Response DTO: the way data leaves a use case</h2>
+<p>After the service finishes, it returns a response object or value. The controller passes that value to Spring MVC, which serializes it into an HTTP response.</p>
+<pre>return new DebitAccountDTO(account.getNumber(), command.getAmount());</pre>
+<p><code>DebitAccountDTO</code> has an account field and amount. <code>AccountBalanceDTO</code> has account number and amount. A DTO lets the API return only selected fields instead of exposing a full JPA entity and its relationships.</p>
+<p>For balance, the service creates one DTO per matching account, sets the account's database ID into <code>number</code>, and computes an amount. The property name and value are slightly misleading: callers might expect the public UUID number, but the value is actually the database ID.</p>
+
+<h2>8. Three request paths, step by step</h2>
+<h3>Path A — create account</h3>
+<ol><li>JSON is deserialized into <code>CreateAccountRequest</code>.</li><li><code>CreateAccountRequestConverter</code> maps it to <code>CreateAccountCommand</code>.</li><li><code>WalletController</code> calls <code>WalletService.createAccount</code>.</li><li>The service creates Account and Customer objects, attaches the Customer, saves only Account, and returns a UUID string.</li><li>The controller returns that string with HTTP 200 if saving succeeds.</li></ol>
+<p>The visible persistence concern is that the new Customer is transient and the relationship has no persist cascade. A robust implementation should decide whether to find/create and save a customer, then attach the persisted entity.</p>
+<h3>Path B — credit account</h3>
+<ol><li>JSON becomes <code>CreditAccountRequest</code>.</li><li>The credit converter maps account number and amount into <code>CreditAccountCommand</code>.</li><li>The service looks up the account by public number and constructs a credit transaction.</li><li>The service requests a notification and saves the account.</li><li>The service returns <code>CreditAccountDTO</code>; the controller wraps it in HTTP 200.</li></ol>
+<p>The request has no request ID, so the transaction's unique <code>requestId</code> is not used for duplicate-request protection. Missing accounts also are not checked before <code>account.getTransactions()</code>.</p>
+<h3>Path C — balance inquiry</h3>
+<ol><li>Caller sends <code>POST .../balance?customerId=123</code>.</li><li>Controller increments an in-memory counter and creates <code>AccountBalanceQuery</code>.</li><li>Service loads all accounts, filters owners by ID, calculates one amount per account, and returns a list of <code>AccountBalanceDTO</code>.</li><li>Controller returns the list as JSON.</li></ol>
+<p>This path skips a request converter. It also sums all transaction amounts as positive values; because debit amounts are not subtracted, it does not compute a net balance. The counter is process-local and is not a daily window.</p>
+
+<h2>9. KYC: an event-driven side path</h2>
+<p>The intended flow is: a Kafka event says a customer passed or failed verification; <code>CustomerVerificationListener</code> identifies the customer; <code>CustomerVerificationService</code> updates the entity through <code>CustomerRepository</code>.</p>
+<div class="diagram">Kafka KYC event → CustomerVerificationListener → CustomerVerificationService → CustomerRepository → Customer</div>
+<p>The event carries <code>identifierType</code>, <code>identifierValue</code>, and <code>verified</code>. The service has handlers for a database ID and national code. The handler currently has important gaps:</p>
+<ul><li><code>@KafkaListener</code> is commented out, so this method is not subscribed to the topic.</li><li>The listener's service field is not injected.</li><li>The switch cases have no <code>break</code>, so <code>ID</code> falls through to the national-code case.</li><li>The verification service's repository field is not injected; national-code lookup also lacks a not-found check.</li><li>Credit/debit do not check whether the customer is verified.</li></ul>
+<p>So the classes describe the intended integration, but the active wallet flow does not yet enforce KYC.</p>
+
+<h2>10. NotificationService: asynchronous message storage</h2>
+<p>Credit/debit call <code>notificationService.send(phone, text)</code>. The service uses <code>CompletableFuture.runAsync</code> to run a separate task:</p>
+<pre>CompletableFuture.runAsync(() -&gt; {
+    Message messageEntity = new Message();
+    messageEntity.setMessage(message);
+    messageEntity.setNumber(number);
+    messageEntity.setStatus(MessageStatus.PENDING);
+    messageRepository.save(messageEntity);
+});</pre>
+<p>This does not send a text message. It only saves a pending message record in the database, asynchronously. The task is not part of the wallet method's database transaction, and an error in the asynchronous task is not returned to the original HTTP request. A complete delivery flow would need a worker or provider integration and status updates.</p>
+
+<h2>11. Simple mental model</h2>
+<div class="good"><strong>When reading any endpoint, ask:</strong><br>1. What HTTP shape enters?<br>2. Does the controller convert it, or build the application input itself?<br>3. Which service method runs?<br>4. Which repository lookup/save happens?<br>5. Which entity relationship is changed?<br>6. What response is returned, and what side effects happen separately?</div>
+<p>For this project, that method reveals both the intended architecture and the current implementation gaps. It helps explain the system clearly without assuming that every README rule is already enforced.</p>
+<p class="small">Prepared from the current checkout's controller, converters, commands, queries, service, entities, repositories, KYC classes, notification classes, and application configuration. Code excerpts are shortened to highlight the relevant hand-offs.</p>
+</body>
+</html>
