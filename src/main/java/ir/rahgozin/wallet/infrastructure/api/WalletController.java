@@ -16,20 +16,16 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.HashMap;
-import java.util.Map;
-
 @Log4j2
 @RestController
 @RequestMapping(value = "/wallet")
 public class WalletController {
-    private final static Map<String, Integer> requestCounter = new HashMap<>();
-    private final int limitation = 5;
-
     @Autowired
     private WalletService walletService;
     @Autowired
     private ConversionService conversionService;
+    @Autowired
+    private BalanceLimit balanceLimit;
 
 
     @PostMapping(path = "/create")
@@ -55,24 +51,13 @@ public class WalletController {
     }
 
     @PostMapping(path = "/balance")
-    public ResponseEntity<?> accountBalance(@RequestParam("customerId") String customerId) {
-
-        if (requestCounter.containsKey(customerId)) {
-            Integer counter = requestCounter.get(customerId);
-            if (counter > limitation) {
-                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).build();
-            }
-            requestCounter.replace(customerId, counter + 1);
-        } else {
-            requestCounter.put(customerId, 1);
-        }
-
-        if (customerId.isBlank()) {
-            throw new RuntimeException("customerId must not be null or empty");
+    public ResponseEntity<?> accountBalance(@RequestParam("customerId") Long customerId) {
+        if (!balanceLimit.isAllowed(customerId)) {
+            return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).build();
         }
 
         AccountBalanceQuery query = new AccountBalanceQuery();
-        query.setCustomerId(Long.valueOf(customerId));
+        query.setCustomerId(customerId);
         return ResponseEntity.ok(walletService.accountBalance(query));
     }
 

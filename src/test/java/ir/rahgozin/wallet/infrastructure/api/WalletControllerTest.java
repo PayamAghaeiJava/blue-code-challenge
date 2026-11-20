@@ -24,6 +24,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Future;
+import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
@@ -92,7 +95,7 @@ public class WalletControllerTest {
 
     @Test
     public void testRateLimitResetsForDifferentCustomer() throws Exception {
-        String customerId1 = "12345";
+        String customerId1 = "12346";
         String customerId2 = "67890";
 
         when(walletService.accountBalance(any())).thenReturn(List.of());
@@ -114,7 +117,7 @@ public class WalletControllerTest {
 
     @Test
     public void testRateLimitUnderConcurrentRequests() throws Exception {
-        String customerId = "12345";
+        String customerId = "12347";
 
         AccountBalanceDTO accountBalanceDTO = new AccountBalanceDTO();
         accountBalanceDTO.setNumber("account-uuid");
@@ -122,27 +125,28 @@ public class WalletControllerTest {
         when(walletService.accountBalance(any(AccountBalanceQuery.class))).thenReturn(List.of(accountBalanceDTO));
 
         int numThreads = 10;
-        int[] okResultCount = {0};
+        AtomicInteger okResultCount = new AtomicInteger();
 
         CountDownLatch latch = new CountDownLatch(1);
 
         ExecutorService executorService = Executors.newFixedThreadPool(numThreads);
+        List<Future<?>> results = new ArrayList<>();
 
         for (int i = 0; i < numThreads; i++) {
-            executorService.submit(() -> {
+            results.add(executorService.submit(() -> {
                 try {
                     latch.await();
                     mockMvc.perform(post("/wallet/balance")
                                     .param("customerId", customerId))
                             .andDo(result -> {
                                 if(result.getResponse().getStatus() == 200){
-                                    okResultCount[0]++;
+                                    okResultCount.incrementAndGet();
                                 }
                             });
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    throw new RuntimeException(e);
                 }
-            });
+            }));
         }
 
 
@@ -152,6 +156,10 @@ public class WalletControllerTest {
         executorService.shutdown();
         boolean awaited = executorService.awaitTermination(10, TimeUnit.SECONDS);
         log.info("executorService is awaited: {}", awaited);
-        assert okResultCount[0] <= 5 : "More than 5 requests were successful, showing the rate limiter failed under concurrency.";
+        org.junit.jupiter.api.Assertions.assertTrue(awaited);
+        for (Future<?> result : results) {
+            result.get();
+        }
+        org.junit.jupiter.api.Assertions.assertEquals(5, okResultCount.get());
     }
 }
