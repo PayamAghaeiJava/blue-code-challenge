@@ -24,7 +24,7 @@ CRITICAL FINDINGS
         Allow withdrawals only from checking accounts.
 [x] 07 fix: reject nonpositive transaction amounts
         Require credit and debit amounts to be greater than zero.
-[ ] 08 fix: reject withdrawals exceeding the account balance
+[x] 08 fix: reject withdrawals exceeding the account balance
         Check the balance before saving a debit; concurrency protection follows in item 10.
 [ ] 09 fix: authorize account ownership
         Add account ownership authorization after choosing the caller identity/provider model.

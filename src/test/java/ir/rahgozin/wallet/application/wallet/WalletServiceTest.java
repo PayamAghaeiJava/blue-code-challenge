@@ -131,6 +131,7 @@ public class WalletServiceTest {
         owner.setVerified(true);
         account.setOwner(owner);
         account.setType(Account.AccountType.CHECKING);
+        account.addTransaction(new Transaction("deposit", account, TransactionDirection.CREDIT, new BigDecimal("50.00")));
         Mockito.when(accountRepository.findByNumber("account-17")).thenReturn(account);
 
         DebitAccountCommand command = new DebitAccountCommand();
@@ -144,7 +145,7 @@ public class WalletServiceTest {
                 transaction.getAccount() == account
                         && "debit-1".equals(transaction.getRequestId())
                         && transaction.getAmount().equals(new BigDecimal("50.00"))));
-        assertEquals(1, account.getTransactions().size());
+        assertEquals(2, account.getTransactions().size());
     }
 
     @Test
@@ -212,6 +213,68 @@ public class WalletServiceTest {
         assertEquals(HttpStatus.BAD_REQUEST, assertThrows(ResponseStatusException.class,
                 () -> walletService.debitAccount(debit)).getStatusCode());
         Mockito.verifyNoInteractions(accountRepository, transactionRepository, notificationService);
+    }
+
+    @Test
+    void givenInsufficientBalance_whenDebit_thenRejectWithoutSaving() {
+        Account account = new Account();
+        Customer owner = new Customer();
+        owner.setVerified(true);
+        account.setOwner(owner);
+        account.setType(Account.AccountType.CHECKING);
+        account.addTransaction(new Transaction("credit", account, TransactionDirection.CREDIT, new BigDecimal("100.00")));
+        account.addTransaction(new Transaction("debit", account, TransactionDirection.DEBIT, new BigDecimal("30.00")));
+        Mockito.when(accountRepository.findByNumber(account.getNumber())).thenReturn(account);
+        DebitAccountCommand command = new DebitAccountCommand();
+        command.setAccountNumber(account.getNumber());
+        command.setAmount(new BigDecimal("70.01"));
+
+        ResponseStatusException exception = assertThrows(ResponseStatusException.class,
+                () -> walletService.debitAccount(command));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
+        assertEquals(2, account.getTransactions().size());
+        Mockito.verifyNoInteractions(transactionRepository, notificationService);
+    }
+
+    @Test
+    void givenNoTransactions_whenDebit_thenReject() {
+        Account account = new Account();
+        Customer owner = new Customer();
+        owner.setVerified(true);
+        account.setOwner(owner);
+        account.setType(Account.AccountType.CHECKING);
+        Mockito.when(accountRepository.findByNumber(account.getNumber())).thenReturn(account);
+        DebitAccountCommand command = new DebitAccountCommand();
+        command.setAccountNumber(account.getNumber());
+        command.setAmount(BigDecimal.ONE);
+
+        ResponseStatusException exception = assertThrows(ResponseStatusException.class,
+                () -> walletService.debitAccount(command));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
+        Mockito.verifyNoInteractions(transactionRepository, notificationService);
+    }
+
+    @Test
+    void givenEnoughBalance_whenDebit_thenSave() {
+        Account account = new Account();
+        Customer owner = new Customer();
+        owner.setVerified(true);
+        account.setOwner(owner);
+        account.setType(Account.AccountType.CHECKING);
+        account.addTransaction(new Transaction("credit", account, TransactionDirection.CREDIT, new BigDecimal("100.00")));
+        account.addTransaction(new Transaction("debit", account, TransactionDirection.DEBIT, new BigDecimal("30.00")));
+        Mockito.when(accountRepository.findByNumber(account.getNumber())).thenReturn(account);
+        DebitAccountCommand command = new DebitAccountCommand();
+        command.setAccountNumber(account.getNumber());
+        command.setAmount(new BigDecimal("69.99"));
+
+        walletService.debitAccount(command);
+
+        Mockito.verify(transactionRepository).save(Mockito.argThat(transaction ->
+                transaction.getDirection() == TransactionDirection.DEBIT
+                        && transaction.getAmount().compareTo(new BigDecimal("69.99")) == 0));
     }
 
 

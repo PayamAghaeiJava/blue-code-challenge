@@ -87,6 +87,9 @@ public class WalletService {
         if (account.getType() != AccountType.CHECKING) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only checking accounts can be debited");
         }
+        if (calculateBalance(account).compareTo(command.getAmount()) < 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Insufficient balance");
+        }
 
         Transaction transaction = new Transaction(
                 command.getRequestId(),
@@ -131,22 +134,26 @@ public class WalletService {
         List<Account> accounts = accountRepository.findByOwnerId(query.getCustomerId());
 
         for (Account account : accounts) {
-            BigDecimal balance = BigDecimal.ZERO;
-            for (Transaction transaction : account.getTransactions()) {
-                if (transaction.getDirection() == TransactionDirection.CREDIT) {
-                    balance = balance.add(transaction.getAmount());
-                } else if (transaction.getDirection() == TransactionDirection.DEBIT) {
-                    balance = balance.subtract(transaction.getAmount());
-                } else {
-                    throw new IllegalStateException("Unknown transaction direction: " + transaction.getDirection());
-                }
-            }
             AccountBalanceDTO result = new AccountBalanceDTO();
             result.setNumber(account.getNumber());
-            result.setAmount(balance);
+            result.setAmount(calculateBalance(account));
             balances.add(result);
         }
         return balances;
+    }
+
+    private BigDecimal calculateBalance(Account account) {
+        BigDecimal balance = BigDecimal.ZERO;
+        for (Transaction transaction : account.getTransactions()) {
+            if (transaction.getDirection() == TransactionDirection.CREDIT) {
+                balance = balance.add(transaction.getAmount());
+            } else if (transaction.getDirection() == TransactionDirection.DEBIT) {
+                balance = balance.subtract(transaction.getAmount());
+            } else {
+                throw new IllegalStateException("Unknown transaction direction: " + transaction.getDirection());
+            }
+        }
+        return balance;
     }
 
     public List<TransactionDTO> listTransactions(TransactionQuery query) {
