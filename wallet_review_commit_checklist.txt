@@ -1,15 +1,15 @@
 WALLET CODE REVIEW COMMIT CHECKLIST
 ==================================
 
-Use [x] after the corresponding change has been implemented, reviewed, and committed.
-These are proposed commit subjects only; this checklist does not change application code.
+Use [x] after the corresponding change has been implemented and its focused tests pass.
+Commit creation is handled separately.
 
 CRITICAL FINDINGS
 -----------------
-[ ] 01  fix: persist customers before creating wallet accounts
+[x] 01  fix: persist customers before creating wallet accounts
         Save or reuse the customer before saving the account; enforce unique national codes.
 
-[ ] 02  fix: persist wallet transactions through the owning relationship
+[x] 02  fix: persist wallet transactions through the owning relationship
         Keep the account transaction collection mutable and save ledger rows explicitly.
 
 [ ] 03  fix: map debit requests by public account number

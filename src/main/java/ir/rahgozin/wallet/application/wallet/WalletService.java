@@ -20,7 +20,6 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -30,6 +29,7 @@ import java.util.stream.Collectors;
 public class WalletService {
     private AccountRepository accountRepository;
     private CustomerRepository customerRepository;
+    private TransactionRepository transactionRepository;
     private NotificationService notificationService;
 
     // readme.md: accounts have one owner. Create customers separately, then attach one here would be second solution and even a better idea.
@@ -48,7 +48,6 @@ public class WalletService {
 
         Account account = new Account();
         account.setOwner(customer);
-        account.setTransactions(Set.of());
         account.setType(AccountType.valueOf(command.getType()));
         account.setNumber(UUID.randomUUID().toString());
         accountRepository.save(account);
@@ -66,9 +65,8 @@ public class WalletService {
                 "credit",
                 command.getAmount());
 
-        Set<Transaction> transactions = account.getTransactions();
-        transactions.add(transaction);
-        account.setTransactions(transactions);
+        account.addTransaction(transaction);
+        transactionRepository.save(transaction);
 
         notificationService.send(account.getOwner().getMobile(), "deposit request of " + command.getAmount() + " has been successfully processed.");
 
@@ -90,9 +88,8 @@ public class WalletService {
                 command.getAmount()
         );
 
-        Set<Transaction> transactions = account.getTransactions();
-        transactions.add(transaction);
-        account.setTransactions(transactions);
+        account.addTransaction(transaction);
+        transactionRepository.save(transaction);
 
         notificationService.send(account.getOwner().getMobile(), "withdrawal request of " + command.getAmount() + " has been successfully processed.");
 

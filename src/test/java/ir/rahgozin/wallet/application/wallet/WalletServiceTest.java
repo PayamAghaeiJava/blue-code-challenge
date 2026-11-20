@@ -3,10 +3,9 @@ package ir.rahgozin.wallet.application.wallet;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -21,6 +20,8 @@ import ir.rahgozin.wallet.application.common.NotificationService;
 import ir.rahgozin.wallet.application.customer.Customer;
 import ir.rahgozin.wallet.application.customer.CustomerRepository;
 import ir.rahgozin.wallet.application.wallet.command.CreateAccountCommand;
+import ir.rahgozin.wallet.application.wallet.command.CreditAccountCommand;
+import ir.rahgozin.wallet.application.wallet.command.DebitAccountCommand;
 import ir.rahgozin.wallet.application.wallet.dto.AccountBalanceDTO;
 import ir.rahgozin.wallet.application.wallet.dto.TransactionDTO;
 import ir.rahgozin.wallet.application.wallet.query.AccountBalanceQuery;
@@ -40,6 +41,9 @@ public class WalletServiceTest {
 
     @MockBean
     CustomerRepository customerRepository;
+
+    @MockBean
+    TransactionRepository transactionRepository;
 
     @MockBean
     NotificationService notificationService;
@@ -88,6 +92,51 @@ public class WalletServiceTest {
         Mockito.verify(accountRepository).save(Mockito.argThat(account -> account.getOwner() == existingCustomer));
     }
 
+    @Test
+    void givenCredit_whenCreditAccount_thenSaveTransactionWithAccountReference() {
+        Account account = new Account();
+        Customer owner = new Customer();
+        owner.setMobile("09120000000");
+        account.setOwner(owner);
+        Mockito.when(accountRepository.findByNumber(account.getNumber())).thenReturn(account);
+
+        CreditAccountCommand command = new CreditAccountCommand();
+        command.setRequestId("credit-1");
+        command.setAccountNumber(account.getNumber());
+        command.setAmount(100.0);
+
+        walletService.creditAccount(command);
+
+        Mockito.verify(transactionRepository).save(Mockito.argThat(transaction ->
+                transaction.getAccount() == account
+                        && "credit-1".equals(transaction.getRequestId())
+                        && transaction.getAmount().equals(100.0)));
+        assertEquals(1, account.getTransactions().size());
+    }
+
+    @Test
+    void givenDebit_whenDebitAccount_thenSaveTransactionWithAccountReference() {
+        Account account = new Account();
+        account.setId(17L);
+        Customer owner = new Customer();
+        owner.setMobile("09120000000");
+        account.setOwner(owner);
+        Mockito.when(accountRepository.findById(17L)).thenReturn(Optional.of(account));
+
+        DebitAccountCommand command = new DebitAccountCommand();
+        command.setRequestId("debit-1");
+        command.setAccountNumber(17L);
+        command.setAmount(50.0);
+
+        walletService.debitAccount(command);
+
+        Mockito.verify(transactionRepository).save(Mockito.argThat(transaction ->
+                transaction.getAccount() == account
+                        && "debit-1".equals(transaction.getRequestId())
+                        && transaction.getAmount().equals(50.0)));
+        assertEquals(1, account.getTransactions().size());
+    }
+
 
     @Test
     void givenCustomerWithNoTransaction_whenInquiryAccountBalanceMoreThanLimitCountPerDay_thenThrowException() {
@@ -104,13 +153,13 @@ public class WalletServiceTest {
         var debitTransactions =  IntStream.rangeClosed(1, 10)
                 .mapToObj(operand ->
                         new Transaction(RandomStringUtils.randomNumeric(5), account, "deposit",  10000.0 ))
-                .collect(Collectors.toSet());
+                .collect(Collectors.toList());
 
         var withdrawalTransactions = IntStream.rangeClosed(1, 5).mapToObj(value ->
                 new Transaction(RandomStringUtils.randomNumeric(5), account, "withdrawal", 10000.0)
-        ).collect(Collectors.toSet());
+        ).collect(Collectors.toList());
 
-        Set<Transaction> totalTransactions = new HashSet<>();
+        List<Transaction> totalTransactions = new ArrayList<>();
         totalTransactions.addAll(debitTransactions);
         totalTransactions.addAll(withdrawalTransactions);
         account.setTransactions(totalTransactions);
@@ -154,12 +203,12 @@ public class WalletServiceTest {
                         return new Transaction(RandomStringUtils.randomNumeric(5), account, "withdrawal",  5000.0 );
                     }
                 })
-                .collect(Collectors.toSet());
+                .collect(Collectors.toList());
         account.setTransactions(mainAccountTransactions);
 
         var withdrawalTransactions = IntStream.rangeClosed(1, 5).mapToObj(value ->
                 new Transaction(RandomStringUtils.randomNumeric(5), anotherAccount, "withdrawal", 10000.0)
-        ).collect(Collectors.toSet());
+        ).collect(Collectors.toList());
         anotherAccount.setTransactions(withdrawalTransactions);
 
 
