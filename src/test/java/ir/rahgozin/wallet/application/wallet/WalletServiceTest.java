@@ -13,6 +13,8 @@ import java.util.stream.IntStream;
 
 import org.apache.commons.lang3.RandomStringUtils;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.mock.mockito.MockBean;
@@ -195,6 +197,21 @@ public class WalletServiceTest {
 
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
         Mockito.verifyNoInteractions(transactionRepository, notificationService);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"0", "0.00", "-1.00"})
+    void givenNonpositiveAmount_whenCreditOrDebit_thenReject(String value) {
+        CreditAccountCommand credit = new CreditAccountCommand();
+        credit.setAmount(new BigDecimal(value));
+        DebitAccountCommand debit = new DebitAccountCommand();
+        debit.setAmount(new BigDecimal(value));
+
+        assertEquals(HttpStatus.BAD_REQUEST, assertThrows(ResponseStatusException.class,
+                () -> walletService.creditAccount(credit)).getStatusCode());
+        assertEquals(HttpStatus.BAD_REQUEST, assertThrows(ResponseStatusException.class,
+                () -> walletService.debitAccount(debit)).getStatusCode());
+        Mockito.verifyNoInteractions(accountRepository, transactionRepository, notificationService);
     }
 
 

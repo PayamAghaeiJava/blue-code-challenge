@@ -109,6 +109,9 @@ public class WalletService {
         if (amount == null || amount.stripTrailingZeros().scale() > 2 || amount.abs().compareTo(new BigDecimal("100000000000000000")) >= 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Amount must fit within 17 digits");
         }
+        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Amount must be greater than zero");
+        }
     }
 
     private Account findVerifiedAccount(String accountNumber) {

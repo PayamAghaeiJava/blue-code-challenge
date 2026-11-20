@@ -22,7 +22,7 @@ CRITICAL FINDINGS
         Reject credits and debits when the account owner has not passed KYC.
 [x] 06 fix: prevent withdrawals from savings accounts
         Allow withdrawals only from checking accounts.
-[ ] 07 fix: reject nonpositive transaction amounts
+[x] 07 fix: reject nonpositive transaction amounts
         Require credit and debit amounts to be greater than zero.
 [ ] 08 fix: reject withdrawals exceeding the account balance
         Check the balance before saving a debit; concurrency protection follows in item 10.
