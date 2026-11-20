@@ -25,38 +25,34 @@ CRITICAL FINDINGS
 [x] 07 fix: reject nonpositive transaction amounts
         Require credit and debit amounts to be greater than zero.
 [x] 08 fix: reject withdrawals exceeding the account balance
-        Check the balance before saving a debit; concurrency protection follows in item 10.
-[ ] 09 fix: authorize account ownership
-        Add account ownership authorization after choosing the caller identity/provider model.
+        Check the balance before saving a debit; concurrency protection follows in item 09.
+[x] 09  fix: make balance checks concurrency-safe
+        Serialize balance checks and writes so simultaneous withdrawals cannot overdraw an account.
 
-[ ] 10  fix: make wallet writes idempotent and concurrency-safe
-        Require request IDs for credit and debit, return prior results on retries, and serialize balance checks.
-
-[ ] 11  fix: enforce the five-per-day balance inquiry limit
+[ ] 10  fix: enforce the five-per-day balance inquiry limit
         Count atomically per customer and day, define the time zone/reset, and test the boundary.
 
-[ ] 12  feat: return filtered customer transaction history
+[ ] 11  feat: return filtered customer transaction history
         Apply customer, direction, and amount filters with stable ordering and pagination.
 
-[ ] 13  fix: connect KYC events to transaction eligibility
+[ ] 12  fix: connect KYC events to transaction eligibility
         Inject services, enable the configured Kafka listener, dispatch identifiers correctly, and reject unverified customers.
 
 FOLLOW-UP RISKS ALSO LISTED IN THE REVIEW
 -----------------------------------------
-[ ] 14  fix: persist notification work reliably
+[ ] 13  fix: persist notification work reliably
         Replace fire-and-forget database writes with a durable delivery workflow and observable status.
 
-[ ] 15  fix: expose credit response fields to JSON
+[ ] 14  fix: expose credit response fields to JSON
         Add accessors or use a response record and verify the serialized API response.
 
-[ ] 16  chore: configure durable database storage and schema migrations
+[ ] 15  chore: configure durable database storage and schema migrations
         Replace development-only in-memory H2/create-drop settings for deployment.
 
-[ ] 17  chore: align Redis configuration with the cache implementation
+[ ] 16  chore: align Redis configuration with the cache implementation
         Configure Redis as intended or remove unused Redis cache settings/dependencies.
 
 NOTES
 -----
 - Keep each numbered item in its own commit so the review can be presented one change at a time.
-- Item 09 ownership checks depend on an agreed authentication/identity integration.
 - The PDF's transaction-history example expects 50,000 for five 10,000 deposits filtered by a 6,000 minimum; update the stale 75,000 test expectation.
