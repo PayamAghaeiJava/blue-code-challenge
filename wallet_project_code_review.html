@@ -1,267 +1,36 @@
 <!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Wallet Project Code Review</title>
+<html lang="en"><head><meta charset="utf-8"><title>Wallet Code Review and Commit Checklist</title>
 <style>
-@page { size: A4; margin: 16mm 15mm 17mm; }
+@page { size: A4; margin: 16mm 16mm 18mm; }
 * { box-sizing: border-box; }
-body { font-family: "Segoe UI", Arial, sans-serif; color: #1b2938; font-size: 9.9pt; line-height: 1.47; }
-h1,h2,h3 { color: #123b63; line-height: 1.2; page-break-after: avoid; }
-h1 { font-size: 28pt; margin: 6pt 0 10pt; }
-h2 { font-size: 17pt; border-bottom: 1px solid #c9d7e5; padding-bottom: 5pt; margin-top: 21pt; }
-h3 { font-size: 12.2pt; margin: 14pt 0 5pt; }
-p { margin: 5pt 0 8pt; }
-ul,ol { padding-left: 20pt; margin-top: 4pt; }
-li { margin: 3pt 0; }
-code { font: 8.7pt Consolas, monospace; color: #163e60; background: #edf3f8; padding: 1px 3px; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f1f5f8; border-left: 3px solid #4385b4; padding: 8pt 10pt; font: 8.1pt/1.38 Consolas, monospace; page-break-inside: avoid; }
-table { width: 100%; border-collapse: collapse; margin: 8pt 0 11pt; font-size: 8.7pt; page-break-inside: avoid; }
-th { background: #174a74; color: white; text-align: left; }
-th,td { border: 1px solid #ccd7e2; padding: 5.5pt 6pt; vertical-align: top; }
-tr:nth-child(even) td { background: #f3f7fa; }
-.cover { min-height: 241mm; display: flex; flex-direction: column; justify-content: center; page-break-after: always; }
-.eyebrow { color: #477ba2; text-transform: uppercase; letter-spacing: 1.7px; font-weight: bold; font-size: 8.8pt; }
-.subtitle { color: #4c6276; font-size: 14pt; max-width: 145mm; }
-.box,.caution,.good,.finding { padding: 8pt 10pt; margin: 8pt 0; page-break-inside: avoid; }
-.box { background: #eef5fa; border-left: 4px solid #3979a6; }
-.caution { background: #fff4e5; border-left: 4px solid #d58b24; }
-.good { background: #edf7f0; border-left: 4px solid #38895a; }
-.finding { border: 1px solid #ccd7e2; border-left: 4px solid #bd523b; }
-.finding h3 { margin-top: 0; }
-.sev { color: #9a3b28; font-weight: 700; }
-.small { font-size: 8.3pt; color: #596d7e; }
-.diagram { font: 8.8pt/1.9 Consolas, monospace; text-align: center; background: #eff5f9; border: 1px solid #c8d7e5; padding: 9pt; page-break-inside: avoid; }
-</style>
-</head>
-<body>
-<section class="cover">
-  <div class="eyebrow">Interview preparation · code review</div>
-  <h1>Wallet Project<br>Reviewer Report</h1>
-  <p class="subtitle">A practical review of the current source: what is wrong, why it matters, how to improve it, and how to explain the findings in an interview.</p>
-  <div class="box"><strong>Review approach</strong><br>Findings below are based on the checked-in Java code, tests, README, and configuration. They describe visible source behavior. Each item includes evidence, impact, a repair direction, and a test idea.</div>
-  <p class="small">Java 21 · Spring Boot 3.3.3 · Spring MVC · Spring Data JPA · H2</p>
-</section>
-
-<h2>1. Executive review</h2>
-<p>This repository is a useful interview sample because it has a recognizable layered structure: HTTP controller → application service → Spring Data repository → JPA entities. It also includes early Kafka/KYC and notification code.</p>
-<p>The main concern is that several core wallet paths are not reliable yet. Account creation tries to persist an account with a new, unsaved customer. Transaction mutation uses an immutable set and the relationship is not configured to cascade. Debit has both a missing request converter and a mismatch between a public UUID account number and a numeric database ID. Balance sums all amounts as positive values, so it cannot represent a net balance.</p>
-<div class="caution"><strong>Suggested interview framing:</strong> describe the architecture fairly, then separate the requirements in the README from behavior implemented in code. Lead with reproducible correctness issues, not style preferences.</div>
-<h3>Recommended repair order</h3>
-<ol>
-  <li>Make account/customer creation and transaction persistence work.</li>
-  <li>Make account identifiers consistent across the API and service.</li>
-  <li>Correct balance arithmetic and enforce account/KYC/amount rules.</li>
-  <li>Implement transaction history and a truly time-based, concurrent-safe limit.</li>
-  <li>Make integrations, errors, security, and tests dependable.</li>
-</ol>
-
-<h2>2. What happened when I ran it</h2>
-<p>I ran the Maven tests using installed Maven 3.9.11 and Java 21.0.7, offline with the existing dependency cache. The Maven wrapper itself could not create its distribution under the configured user home, so the installed Maven executable was used with a temporary settings file.</p>
-<div class="caution"><strong>Test result: 5 tests ran; 4 failed, 1 passed, 0 errors.</strong> The single passing test was the concurrent rate-limit test in this run. Its pass does not make the limiter thread-safe; it only means that test's assertion passed once.</div>
-<table>
-<tr><th>Observed test failure</th><th>Actual result</th><th>What it confirms</th></tr>
-<tr><td><code>WalletServiceTest.givenCustomerWithNoTransaction_whenInquiryAccountBalanceMoreThanLimitCountPerDay_thenThrowException</code></td><td>Expected 50,000; got 150,000.</td><td>The test fixture has fifteen 10,000 transactions and the service adds all amounts, including withdrawals.</td></tr>
-<tr><td><code>WalletServiceTest.givenTransactionQuery_whenInquiryTransactionList_thenReturnCorrectQueriedList</code></td><td>Expected 75,000; got 0.</td><td><code>listTransactions</code> returns an empty list, matching the TODO stub.</td></tr>
-<tr><td><code>WalletControllerTest.testRateLimitResetsForDifferentCustomer</code></td><td>Expected 429 for the sixth request; got 200.</td><td>The limit check is off by one: count 5 passes because code blocks only when count is greater than 5.</td></tr>
-<tr><td><code>WalletControllerTest.testRateLimit</code></td><td>Expected 200 within its first five calls; got 429.</td><td>The static counter retains state between tests that reuse customer ID 12345, making outcomes test-order dependent.</td></tr>
-</table>
-<p>The concurrency test passed once, but it shares a plain mutable <code>int[]</code> between threads and uses a non-atomic map/check/update. Keep the race-safety issue as a code-review finding until a deterministic concurrent test proves the behavior.</p>
-<h3>HTTP smoke checks</h3>
-<p>The app started successfully on port 8080 with context path <code>/wallet</code> and the in-memory H2 database. Redis and Kafka containers were not running; they were not needed for startup in this configuration.</p>
-<table>
-<tr><th>Request/result</th><th>Observed outcome</th></tr>
-<tr><td>POST <code>/wallet/balance</code> (single prefix)</td><td>404 Not Found.</td></tr>
-<tr><td>POST <code>/wallet/wallet/transactions?customerId=902</code></td><td>200 OK with an empty JSON list.</td></tr>
-<tr><td>POST valid-shaped account creation to <code>/wallet/wallet/create</code></td><td>500 Internal Server Error. Source inspection points to the unsaved Customer referenced by Account.</td></tr>
-<tr><td>POST debit with <code>requestId</code>, numeric account number, and amount</td><td>500 Internal Server Error. Source inspection points to the missing request converter.</td></tr>
-<tr><td>POST credit for an unknown account</td><td>500 Internal Server Error, consistent with lookup returning null and being dereferenced without a not-found response.</td></tr>
-<tr><td>Seven balance requests for a fresh customer ID in the running process</td><td>Calls 1–6 returned 200; call 7 returned 429.</td></tr>
-</table>
-<p>A successful credit could not be smoke-tested because account creation failed and no account was seeded. The tests and smoke checks are evidence for the listed cases, not proof that every possible path was exercised.</p>
-
-<h2>3. Priority overview</h2>
-<table>
-<tr><th>Priority</th><th>Finding</th><th>Main effect</th></tr>
-<tr><td class="sev">P0 — correctness</td><td>Unsaved customer on account creation</td><td>Account save can fail.</td></tr>
-<tr><td class="sev">P0 — correctness</td><td>Immutable transaction collection and no persistence cascade</td><td>Credit/debit can fail or fail to save ledger rows.</td></tr>
-<tr><td class="sev">P0 — API contract</td><td>Debit converter missing; ID type and lookup disagree</td><td>Debit route cannot reliably find an account.</td></tr>
-<tr><td class="sev">P0 — money correctness</td><td>Balance sums debits and credits the same way</td><td>Returned “balance” is mathematically wrong.</td></tr>
-<tr><td class="sev">P1 — business rule</td><td>KYC, account type, amount, funds, and customer ownership are not enforced</td><td>Disallowed or unauthorized operations can be attempted.</td></tr>
-<tr><td class="sev">P1 — concurrency</td><td>Rate counter is off by one, not daily, and not thread-safe</td><td>Limit does not match the documented rule.</td></tr>
-<tr><td class="sev">P1 — missing feature</td><td>Transaction history always returns empty</td><td>Endpoint does not fulfill its apparent purpose.</td></tr>
-<tr><td class="sev">P1 — integration</td><td>KYC listener disabled and dependencies unwired</td><td>Verification events do not update customers.</td></tr>
-<tr><td class="sev">P1 — reliability</td><td>Idempotency and transaction concurrency are incomplete</td><td>Retries/races can create duplicate or invalid movements.</td></tr>
-<tr><td>P2 — delivery</td><td>Notification only stores PENDING; tests/configuration have gaps</td><td>Behavior is hard to trust or operate.</td></tr>
-</table>
-
-<h2>4. Detailed findings and practical fixes</h2>
-
-<div class="finding">
-<h3><span class="sev">P0 · 1.</span> Account creation references an unsaved customer</h3>
-<p><strong>Evidence:</strong> <code>WalletService.createAccount</code> constructs a new <code>Customer</code>, assigns it to <code>Account.owner</code>, then saves only the account. <code>Account.owner</code> is a <code>@ManyToOne</code> without a persist cascade. There is no customer repository in <code>WalletService</code>.</p>
-<p><strong>Why it matters:</strong> JPA normally cannot insert an account row that points to a transient customer with no database ID. The save can fail. Also, creating each account creates a fresh customer object instead of finding an existing customer, contrary to “one customer can have multiple accounts.”</p>
-<p><strong>Solution:</strong> define whether customers are created separately or found by national code. Save or load the customer first, then attach that managed customer to the account. Add a unique constraint for national code if it is the identity key, and run the use case in a transaction.</p>
-<pre>Customer owner = customerRepository.findByNationalCode(code)
-        .orElseGet(() -&gt; customerRepository.save(newCustomer(command)));
-Account account = new Account();
-account.setOwner(owner);
-accountRepository.save(account);</pre>
-<p><strong>Test:</strong> create the first account for a customer, then a second account for the same national code. Assert one customer row, two account rows, and the same owner ID.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P0 · 2.</span> Transaction collection is immutable and ledger rows are not cascaded</h3>
-<p><strong>Evidence:</strong> account creation uses <code>account.setTransactions(Set.of())</code>. Credit and debit later call <code>account.getTransactions().add(transaction)</code>. In <code>Account</code>, the collection uses <code>@OneToMany(mappedBy = "account")</code> without cascade. The foreign key is owned by <code>Transaction.account</code>.</p>
-<p><strong>Why it matters:</strong> <code>Set.of()</code> is immutable; adding to it throws <code>UnsupportedOperationException</code>. Even with a mutable collection, saving the account does not automatically persist new child transactions when no cascade is configured. The transaction is the financial ledger entry, so silently missing it is serious.</p>
-<p><strong>Solution:</strong> use a mutable collection (for example, <code>HashSet</code>) and make persistence explicit. A simple design is a <code>TransactionRepository</code> and saving each transaction with its account set. Alternatively, configure deliberate cascade behavior and maintain both sides through an account helper. Do not rely on changing only the inverse collection.</p>
-<pre>Transaction tx = new Transaction(requestId, account, "credit", amount);
-transactionRepository.save(tx); // Transaction.account owns the FK</pre>
-<p><strong>Test:</strong> credit an account, commit the transaction, reload it in a fresh persistence context, and assert the transaction row and account association exist.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P0 · 3.</span> Debit request mapping and account identifier disagree</h3>
-<p><strong>Evidence:</strong> <code>WalletController.debitAccount</code> asks <code>ConversionService</code> to convert <code>DebitAccountRequest</code> to <code>DebitAccountCommand</code>, but the repository contains no converter for that pair. The request and command define <code>accountNumber</code> as <code>Long</code>. The service calls <code>accountRepository.findById(...)</code>. Credit instead uses a string number and <code>findByNumber(...)</code>. Account's public number is a UUID string.</p>
-<p><strong>Why it matters:</strong> conversion can fail before the service runs. Even if it succeeds, debit looks up the database primary key while clients are expected to use the public UUID. Those are different identifiers.</p>
-<p><strong>Solution:</strong> choose one public contract. If the API uses the UUID, make debit's <code>accountNumber</code> a <code>String</code>, add a converter that maps request ID, number, and amount, and look up by public number. Return a clear not-found error with <code>Optional</code> rather than a null dereference.</p>
-<pre>Account account = accountRepository.findByNumber(command.getAccountNumber())
-        .orElseThrow(() -&gt; new AccountNotFoundException(...));</pre>
-<p><strong>Test:</strong> submit a debit with a UUID account number; verify the expected account is used. Also test unknown account and malformed request handling.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P0 · 4.</span> Balance calculation does not subtract withdrawals</h3>
-<p><strong>Evidence:</strong> <code>WalletService.accountBalance</code> uses <code>mapToDouble(Transaction::getAmount).sum()</code>. It does not inspect the direction field. The source stores credit and debit amounts as positive numbers.</p>
-<p><strong>Why it matters:</strong> adding a deposit of 100 and a withdrawal of 30 returns 130; the net balance should be 70. This is a financial correctness bug. The method also puts <code>account.getId()</code> into the DTO field named <code>number</code>, although the external account number is a UUID string, and it loads all accounts before filtering.</p>
-<p><strong>Solution:</strong> model amount with <code>BigDecimal</code> and direction with an enum. Define balance as credits minus debits and calculate with decimal arithmetic. Put the account identifier in the API field that its name promises. Query only the customer's accounts in the repository.</p>
-<pre>// Illustrative after changing amount to BigDecimal and direction to an enum
-BigDecimal balance = transactions.stream()
-    .map(tx -&gt; tx.getDirection() == Direction.CREDIT
-        ? tx.getAmount() : tx.getAmount().negate())
-    .reduce(BigDecimal.ZERO, BigDecimal::add);</pre>
-<p><strong>Test:</strong> deposits 100 and 50, withdrawals 30; expect 120. Include no transactions, multiple accounts, and decimal values such as 0.10.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P1 · 5.</span> Core wallet rules and caller authorization are missing</h3>
-<p><strong>Evidence:</strong> the README requires verified customers, savings-only deposits, checking deposits and withdrawals. Credit/debit do not check verification or account type. Debit does not check positive amount or available funds. The endpoints accept account/customer identifiers from the caller, but the project has no visible authentication or ownership check.</p>
-<p><strong>Why it matters:</strong> requests can attempt withdrawals from savings, use unverified customers, submit negative or zero amounts, overdraw accounts, or target identifiers without proving ownership. If exposed to untrusted users, this is an authorization issue as well as a business-rule gap.</p>
-<p><strong>Solution:</strong> put rules in the application use case, not only in the controller. Validate amount &gt; 0; enforce customer verification and account type; compute available funds; identify the caller from an authenticated principal and verify ownership before accessing the account. Use <code>@Enumerated(EnumType.STRING)</code> for account type/direction rather than relying on ordinal storage. Align the README's <code>SAVINGS</code> wording with the code's <code>SAVING</code> value.</p>
-<p><strong>Test:</strong> parameterize allowed and rejected cases: unverified, savings debit, checking debit within funds, overdraft, zero, negative, and a different customer's account.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P1 · 6.</span> Balance-query limit is off by one, not daily, and not thread-safe</h3>
-<p><strong>Evidence:</strong> <code>WalletController</code> holds a static <code>HashMap</code>. It blocks only when <code>counter &gt; 5</code>. On request six, the existing count is five, so the check passes and increments to six; request seven is the first blocked. There is no date/window or expiry.</p>
-<p><strong>Why it matters:</strong> the README says five per day. Current behavior permits six per process lifetime, then blocks until restart. Concurrent calls can race because <code>HashMap</code> and the check-then-increment sequence are not atomic. A static map is also shared across tests and disappears on restart.</p>
-<p><strong>Solution:</strong> define which time zone and day boundary apply. Use an atomic counter with a customer-and-date key and expiry; for multiple app instances, use a shared limiter such as Redis with atomic increment. Keep rate limiting separate from caching.</p>
-<p><strong>Test:</strong> fifth call is accepted, sixth gets 429, next day resets, different customers have separate counts, and a parallel burst allows exactly five. Use a controllable clock and reset test state.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P1 · 7.</span> Transaction history endpoint is a stub</h3>
-<p><strong>Evidence:</strong> <code>WalletService.listTransactions</code> contains a TODO and returns <code>Collections.emptyList()</code>. <code>TransactionQuery</code> has direction and amount bounds, while the controller only supplies customer ID.</p>
-<p><strong>Why it matters:</strong> the endpoint always reports no activity even when transactions exist. The service test named for querying transactions expects filtered results, so test intent and implementation disagree.</p>
-<p><strong>Solution:</strong> define filter semantics and pass filters from HTTP input. Add a repository query scoped to account owner, direction, and amount range; include pagination and stable sorting so a customer with many transactions does not load the entire ledger.</p>
-<p><strong>Test:</strong> add fixtures for two customers and several directions/amounts; verify customer isolation, lower and upper boundaries, combinations, empty result, and paging.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P1 · 8.</span> KYC event flow is not active and is not wired</h3>
-<p><strong>Evidence:</strong> <code>@KafkaListener</code> is commented out in <code>CustomerVerificationListener</code>. Its <code>CustomerVerificationService</code> field is never injected. That service's <code>CustomerRepository</code> field is also never injected. The switch has no break: <code>ID</code> falls through to <code>NATIONAL_CODE</code>. Wallet operations never read <code>Customer.isVerified</code>.</p>
-<p><strong>Why it matters:</strong> Kafka will not call this method as a listener; if called directly, it can hit null dependencies and an ID event can trigger the wrong lookup. Even a successful verification update does not gate wallet operations.</p>
-<p><strong>Solution:</strong> constructor-inject both dependencies, enable a configured listener with a stable topic/group, use arrow-style switch cases, handle unknown identifiers explicitly, and enforce KYC before financial operations. Make event handling observable and safely retryable.</p>
-<pre>switch (event.getIdentifierType()) {
-    case "ID" -&gt; verificationService.handleByCustomerId(...);
-    case "NATIONAL_CODE" -&gt; verificationService.handleByNationalCode(...);
-    default -&gt; throw new InvalidIdentifierTypeException(...);
-}</pre>
-<p><strong>Test:</strong> test each event type, missing customer, unknown type, and the wallet's rejection of an unverified owner.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P1 · 9.</span> Retry safety and concurrent debits are not solved</h3>
-<p><strong>Evidence:</strong> <code>Transaction.requestId</code> is unique, suggesting idempotency, but the credit request has no request ID and its converter does not set one. No code checks for an existing request before applying it. Debit has no lock/version check around available funds.</p>
-<p><strong>Why it matters:</strong> if a client times out after a deposit commits and retries, the same deposit could be applied twice. Two withdrawals can both read the same old balance and together overdraw it.</p>
-<p><strong>Solution:</strong> require an idempotency key for both money-moving requests, store it with a uniqueness constraint, and return the original result on retry. Calculate funds and write the debit atomically using optimistic locking (<code>@Version</code>) or a suitable database lock. Keep the ledger as the authoritative record.</p>
-<p><strong>Test:</strong> repeat the same request ID and assert only one transaction; run two withdrawals concurrently against limited funds and assert no invalid negative balance.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P1 · 10.</span> Money uses Double and input/error handling is weak</h3>
-<p><strong>Evidence:</strong> commands, entities, and DTOs use <code>Double</code> for amounts. Request fields have no validation annotations. Missing account results can become null dereferences, and there is no consistent exception-to-HTTP error mapping.</p>
-<p><strong>Why it matters:</strong> binary floating-point cannot exactly represent many decimal fractions, which is undesirable for currency. Invalid amounts and unknown IDs can return confusing server errors.</p>
-<p><strong>Solution:</strong> use <code>BigDecimal</code>, validate scale and positivity, add Bean Validation such as <code>@NotNull</code>/<code>@Positive</code>, and map domain exceptions to clear 400/404/409 responses with <code>@RestControllerAdvice</code>.</p>
-<p><strong>Test:</strong> invalid JSON, missing IDs, unsupported account type, zero/negative amount, excess decimal places, and not-found cases should return stable status codes and error bodies.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P2 · 11.</span> NotificationService records a pending message but does not send it</h3>
-<p><strong>Evidence:</strong> <code>NotificationService.send</code> starts <code>CompletableFuture.runAsync</code>, creates a <code>Message</code> with status <code>PENDING</code>, and saves it. There is no provider call or worker that marks it <code>SENT</code>/<code>FAILED</code>.</p>
-<p><strong>Why it matters:</strong> method name and API response can imply delivery, but only database queuing happens. Async failures do not reach the original request. The write is not in the wallet transaction.</p>
-<p><strong>Solution:</strong> describe it as enqueueing, not sending. For reliable delivery, persist an outbox/message row in the same database transaction as the wallet operation, then process it with a worker that retries and records outcomes. Do not let a notification failure undo or falsely confirm money movement.</p>
-<p><strong>Test:</strong> assert the pending event is created transactionally and that worker success/failure updates status with retry behavior.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P2 · 12.</span> Tests do not reliably prove the intended behavior</h3>
-<p><strong>Evidence:</strong> the balance test name mentions a daily limit, but it calls the service directly and tests only a balance calculation. Its fixture has fifteen positive 10,000 transactions, while the service sums all amounts and the test expects 50,000. The history test expects results, but the service returns empty. The controller's static counter is not reset between tests; its concurrency test increments a shared plain integer.</p>
-<p><strong>Why it matters:</strong> names and assertions do not match the behavior under test. The service tests cannot prove a controller rate limit. Shared mutable state makes tests order-dependent, and an unsynchronized counter can lose updates.</p>
-<p><strong>Solution:</strong> make one behavior the focus of each test. Reset state or inject a limiter. Use JUnit assertions, deterministic fixtures, and separate service/API/integration tests. Keep tests aligned to documented semantics and update the README only when requirements truly change.</p>
-<p><strong>Test plan:</strong> for every finding above, add a failing focused test first, implement the smallest fix, then run the whole suite.</p>
-</div>
-
-<div class="finding">
-<h3><span class="sev">P2 · 13.</span> Response and persistence details can surprise clients</h3>
-<p><strong>Evidence:</strong> <code>CreditAccountDTO</code> has private fields and only <code>@AllArgsConstructor</code>, with no getters or <code>@Data</code>. <code>AccountBalanceDTO.number</code> is a <code>Long</code> populated from the database ID, while the account's public number is a UUID string. <code>Account.type</code> has no <code>@Enumerated(EnumType.STRING)</code>, so JPA's default is ordinal storage.</p>
-<p><strong>Why it matters:</strong> default Jackson serialization may not expose private DTO fields without getters/field annotations. API consumers may receive a database ID while expecting an account number. Ordinal enums can become incorrect if enum order changes.</p>
-<p><strong>Solution:</strong> use a record or explicit getters for response DTOs; name and type fields according to their meaning; add JSON contract tests; persist enum names with <code>@Enumerated(EnumType.STRING)</code>.</p>
-</div>
-
-<h2>5. Configuration observations</h2>
-<ul>
-<li><code>application.yml</code> uses in-memory H2 and <code>ddl-auto: create-drop</code>. Data is lost when the process stops; this is convenient for a sample but not durable storage.</li>
-<li>Spring cache type is <code>simple</code>, and <code>AppConfig</code> creates an in-memory cache manager. No cache annotations or cache use are visible. Redis dependency/config and a Redis container are present but do not make this cache Redis-backed.</li>
-<li>Kafka dependency, consumer settings, and Docker Compose broker exist, but the only KYC listener annotation is commented out.</li>
-<li>All controller operations use POST, including balance and transaction reads. This can be changed to GET if the API contract permits.</li>
-<li>The servlet context path and controller mapping both include <code>/wallet</code>; document and test the actual external path.</li>
-</ul>
-<p>These are lower priority than correctness of money movement, but they matter when explaining what infrastructure is active versus merely configured.</p>
-
-<h2>6. Test matrix for a reviewer</h2>
-<table>
-<tr><th>Area</th><th>Important cases</th></tr>
-<tr><td>Account ownership</td><td>New customer, existing customer, duplicate national code, missing customer.</td></tr>
-<tr><td>Ledger</td><td>Persist credit/debit, correct owner/account relation, request ID uniqueness, transaction reload.</td></tr>
-<tr><td>Money rules</td><td>Positive amount, decimal precision, savings withdrawal rejected, checking debit, insufficient funds.</td></tr>
-<tr><td>Balance</td><td>Credits less debits, multiple accounts, empty history, decimal amounts.</td></tr>
-<tr><td>Access control</td><td>Owner can access account; another authenticated customer cannot.</td></tr>
-<tr><td>Rate limit</td><td>Five allowed, sixth blocked, next-day reset, parallel calls, independent customer counters.</td></tr>
-<tr><td>KYC</td><td>ID and national-code events, not found, disabled/unverified customer rejected by wallet service.</td></tr>
-<tr><td>HTTP contract</td><td>Valid request, validation error, not found, duplicate request, response JSON fields and status codes.</td></tr>
-</table>
-
-<h2>7. How to present this review in an interview</h2>
-<h3>A clear 45-second summary</h3>
-<div class="good">“The project has a clear Spring layered shape: the controller handles HTTP, commands and queries carry input, WalletService coordinates use cases, and Spring Data repositories persist JPA entities. My highest-priority findings are correctness issues in the money path: account creation attaches an unsaved customer, transaction persistence is not configured safely, debit uses a different identifier contract from credit, and balance adds debits instead of subtracting them. I would confirm the intended API and business rules, add focused failing tests, and fix those before polishing infrastructure.”</div>
-<h3>If asked what you would fix first</h3>
-<ol>
-<li>Ask whether the task is account creation, debit, or history, and confirm the expected identifier and ledger semantics.</li>
-<li>Write one small test demonstrating the failure. For example: deposit 100, withdraw 30, expected balance 70.</li>
-<li>Make a minimal design correction; avoid changing unrelated integrations in the same patch.</li>
-<li>Explain how the change handles retries, concurrency, and error cases if money movement is involved.</li>
-<li>Run the focused test and then the full suite; report any known limitation plainly.</li>
-</ol>
-<h3>Useful phrases</h3>
-<ul>
-<li>“I want to verify whether this field is the database ID or the public account number before changing the API.”</li>
-<li>“This test name says rate limit, but it calls the service directly, so it cannot validate the controller's limiter.”</li>
-<li>“I would keep the ledger entry and account update in one database transaction, then publish notification work reliably after commit.”</li>
-<li>“I’m treating the README as the stated requirement and checking whether each rule is enforced in the use case.”</li>
-</ul>
-<div class="box"><strong>Reviewer mindset:</strong> state the evidence, explain the user impact, propose the smallest safe change, and show how a test would prove it.</div>
-
-<p class="small">Review scope: checked-in README, Maven configuration, application YAML, Java production source, test source, the Maven test run, and local HTTP smoke checks. No application code was changed during this review. Priority labels reflect impact if the documented wallet behavior is expected.</p>
-</body>
-</html>
+body { font: 10pt/1.47 "Segoe UI", Arial, sans-serif; color: #1b2938; }
+h1,h2,h3 { color:#123b63; line-height:1.22; page-break-after:avoid; }
+h1 { font-size:27pt; } h2 { font-size:17pt; border-bottom:1px solid #c9d7e5; padding-bottom:5pt; margin-top:20pt; } h3 { font-size:12pt; margin:14pt 0 5pt; }
+p { margin:5pt 0 8pt; } code { font:9pt Consolas,monospace; background:#edf3f8; padding:1px 3px; } pre { white-space:pre-wrap; background:#f1f5f8; border-left:3px solid #4385b4; padding:8pt; font:8.5pt/1.4 Consolas,monospace; page-break-inside:avoid; }
+.cover { min-height:240mm; display:flex; flex-direction:column; justify-content:center; page-break-after:always; } .subtitle { color:#4c6276; font-size:14pt; } .box { background:#eef5fa; border-left:4px solid #3979a6; padding:9pt 10pt; margin:10pt 0; } .done { color:#226a3d; font-weight:bold; } .open { color:#9a3b28; font-weight:bold; } .item { border:1px solid #ccd7e2; border-left:4px solid #3979a6; padding:8pt 10pt; margin:11pt 0; page-break-inside:avoid; } .item h3 { margin-top:0; } .small { font-size:8.5pt; color:#596d7e; } table { border-collapse:collapse; width:100%; } th,td { border:1px solid #ccd7e2; padding:5pt; text-align:left; } th { background:#174a74; color:white; }
+</style></head><body>
+<section class="cover"><p class="small">INTERVIEW PREPARATION · REPOSITORY REVIEW</p><h1>Wallet Code Review<br>and Commit Checklist</h1><p class="subtitle">The same issues, numbers, titles and status as the project's commit checklist.</p><div class="box"><strong>How to use this document</strong><br>Open <code>wallet_review_commit_checklist.txt</code> beside this PDF. Each heading below matches one checklist item. For completed work, show the commit and explain the problem, the fix and the test. For open work, explain the proposed fix.</div><p class="small">Snapshot: 21 November 2026 · Git HEAD: 9f97ada · Java 21 · Spring Boot · JPA</p></section>
+<h2>Critical findings</h2>
+<div class="item"><h3><span class="done">[x] 01</span> fix: persist customers before creating wallet accounts</h3><p><strong>Problem:</strong> A new account referenced a customer that had not been saved, which could make the account save fail. Recreating the same customer could also duplicate owners.</p><p><strong>Fix:</strong> Look up the customer by national code, save a new customer only if needed, and then save the account. The national code has a unique database constraint.</p><p><strong>Interview:</strong> “I save or reuse the owner first, so multiple accounts can refer to the same customer.” A separate customer creation use case is another design option.</p><p><strong>Commit:</strong> <code>1deec8c</code>. <strong>Check:</strong> Tests cover creating a customer and reusing an existing one.</p></div>
+<div class="item"><h3><span class="done">[x] 02</span> fix: persist wallet transactions through the owning relationship</h3><p><strong>Problem:</strong> The account transaction collection was immutable, and saving an account alone did not ensure that its ledger entries were saved.</p><p><strong>Fix:</strong> Use a mutable list, connect each transaction to the account, and save the transaction explicitly. The transaction owns the relationship and stores the account foreign key.</p><p><strong>Interview:</strong> “Adding an object to the account's collection is not enough to persist the owning side. I set the account on the transaction and save the transaction.” A list does not prevent duplicates; a unique request ID is enforced in the database when present.</p><p><strong>Commit:</strong> <code>685a723</code> (<code>fix: persist credit and debit transactions</code>). <strong>Check:</strong> Credit and debit tests verify the saved transaction points to its account.</p></div>
+<div class="item"><h3><span class="done">[x] 03</span> fix: map debit requests by public account number</h3><p><strong>Problem:</strong> Debit lacked a request converter and used a numeric database ID even though the public account number is a UUID string.</p><p><strong>Fix:</strong> Convert the debit request to a command, keep the account number as a string, find the account by its public number, and return 404 if it does not exist.</p><p><strong>Interview:</strong> “I made the request, command and repository lookup agree on the identifier that the client actually receives.”</p><p><strong>Commit:</strong> <code>52a766b</code> (<code>fix: map debit requests by account number</code>). <strong>Check:</strong> Focused service and controller tests cover conversion and a missing account.</p></div>
+<div class="item"><h3><span class="done">[x] 04</span> fix: calculate balances from transaction direction</h3><p><strong>Problem:</strong> The old balance added withdrawals as if they were deposits. Amounts used <code>Double</code>, and the result used the database ID instead of the public account number.</p><p><strong>Fix:</strong> Use <code>BigDecimal</code> and a direction enum; query accounts by customer; add credits and subtract debits; return public account numbers. Amounts are limited to the database's precision and two decimal places.</p><p><strong>Example:</strong> A 100.00 credit followed by a 30.00 debit produces 70.00. Decimal amounts such as 0.10 and 0.20 are calculated exactly.</p><p><strong>Commit:</strong> <code>cb86397</code> (<code>fix: calculate wallet balances using transaction direction</code>). <strong>Check:</strong> Focused tests cover mixed directions, decimal amounts and the public account number.</p></div>
+<div class="item"><h3><span class="done">[x] 05</span> fix: require customer verification for transactions</h3><p><strong>Problem:</strong> The README requires a verified customer before a transaction, but the service did not check the verification flag.</p><p><strong>Fix:</strong> Before credit or debit, load the account and reject an unverified or missing owner with 403. An unknown account returns 404. Successful operations continue for verified customers.</p><p><strong>Interview:</strong> “I apply the README rule in the service before saving a ledger entry. This checks the flag; the separate KYC event flow still needs work.”</p><p><strong>Commit:</strong> <code>3c10015</code>. <strong>Check:</strong> Focused tests cover both rejected transactions and successful operations for verified owners.</p></div>
+<div class="item"><h3><span class="done">[x] 06</span> fix: prevent withdrawals from savings accounts</h3><p><strong>Problem:</strong> The README allows only deposits for savings accounts, but the debit method did not check the account type.</p><p><strong>Fix:</strong> Reject a debit unless the type is <code>CHECKING</code>. Savings accounts can still be credited. The code uses <code>SAVING</code>; the README says <code>SAVINGS</code>.</p><pre>if (account.getType() != AccountType.CHECKING) {
+    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+            "Only checking accounts can be debited");
+}</pre><p><strong>Commit:</strong> <code>9f97ada</code> (<code>fix: don't access withdrawals from savings accounts</code>). <strong>Check:</strong> Three focused tests passed: savings debit is rejected, checking debit is accepted, and savings credit is accepted.</p></div>
+<div class="item"><h3><span class="open">[ ] 07</span> fix: reject nonpositive transaction amounts</h3><p><strong>Problem:</strong> The current precision check does not reject zero or negative values. A negative deposit or withdrawal can change the ledger in an unexpected direction.</p><p><strong>Proposed fix:</strong> Require amounts greater than zero for both credit and debit using <code>amount.compareTo(BigDecimal.ZERO) &gt; 0</code>. Return a clear client error before saving.</p><p><strong>Check:</strong> Test zero and negative amounts for both operations, and verify no ledger entry or notification is created.</p></div>
+<div class="item"><h3><span class="open">[ ] 08</span> fix: reject withdrawals exceeding the account balance</h3><p><strong>Problem:</strong> A checking account can currently be debited without checking available funds. For example, a withdrawal of 120 from a balance of 100 can be recorded.</p><p><strong>Proposed fix:</strong> Calculate the balance from the ledger and reject a debit greater than the balance; allow a debit equal to it.</p><p><strong>Check and limitation:</strong> Test sufficient, exact and insufficient balances. A separate concurrency fix in item 10 is needed to make this check safe when requests arrive together.</p></div>
+<div class="item"><h3><span class="open">[ ] 09</span> fix: authorize account ownership</h3><p><strong>Problem:</strong> The project accepts account and customer identifiers without establishing that the caller owns them. A verified account owner is not proof of the caller's identity.</p><p><strong>Proposed fix:</strong> Choose an authentication provider and caller identity model, then compare the authenticated customer to the account owner before accessing it. Apply the same principle to customer-scoped queries.</p><p><strong>Check:</strong> An authenticated owner succeeds; another customer is denied. This depends on selecting an identity integration.</p></div>
+<div class="item"><h3><span class="open">[ ] 10</span> fix: make wallet writes idempotent and concurrency-safe</h3><p><strong>Problem:</strong> A retry can create another transaction, and simultaneous withdrawals can both observe the same balance. The unique request ID alone does not return a prior result; the credit request does not currently supply one.</p><p><strong>Proposed fix:</strong> Require and persist request IDs for credit and debit, return the prior result for an identical retry, and serialize each balance check and write using a suitable database lock or version strategy.</p><p><strong>Check:</strong> Retry the same request and assert one ledger entry; race two debits against limited funds and assert the balance cannot be overdrawn.</p></div>
+<div class="item"><h3><span class="open">[ ] 11</span> fix: enforce the five-per-day balance inquiry limit</h3><p><strong>Problem:</strong> The controller uses a static map, permits a sixth request, has no daily reset and is not safe for concurrent requests.</p><p><strong>Proposed fix:</strong> Define the time zone and day boundary, then atomically count requests per customer and day. A shared store is required if multiple application instances must share the limit.</p><p><strong>Check:</strong> The fifth request succeeds, the sixth is rejected, the next day resets, customers are isolated, and concurrent calls respect the limit.</p></div>
+<div class="item"><h3><span class="open">[ ] 12</span> feat: return filtered customer transaction history</h3><p><strong>Problem:</strong> The transaction history method is a stub and returns an empty list.</p><p><strong>Proposed fix:</strong> Filter by customer, direction and amount, and provide stable ordering and pagination. Query only the relevant customer's data.</p><p><strong>Check:</strong> Cover different customers, directions, boundaries, combinations and empty pages. Five deposits of 10,000 with a minimum of 6,000 total 50,000; the existing 75,000 test expectation needs correction.</p></div>
+<div class="item"><h3><span class="open">[ ] 13</span> fix: connect KYC events to transaction eligibility</h3><p><strong>Problem:</strong> The Kafka listener annotation is disabled, dependencies are not injected, and event dispatch can fall through between identifier types. The service now checks verification, but the event flow that updates it is incomplete.</p><p><strong>Proposed fix:</strong> Inject the listener and service dependencies, enable a configured listener, dispatch each identifier correctly, and handle missing customers and failures clearly.</p><p><strong>Check:</strong> Exercise customer ID and national code events and show that verification changes transaction eligibility.</p></div>
+<h2>Follow-up risks also listed in the review</h2>
+<div class="item"><h3><span class="open">[ ] 14</span> fix: persist notification work reliably</h3><p><strong>Problem:</strong> Notification work runs asynchronously and records a pending message; failure and delivery are not reliably tied to the wallet transaction.</p><p><strong>Proposed fix:</strong> Persist notification work with the wallet change using an outbox or similar durable approach, then process it with retries and observable status.</p><p><strong>Check:</strong> Cover successful delivery, failures, retries and the relationship between the ledger commit and queued message.</p></div>
+<div class="item"><h3><span class="open">[ ] 15</span> fix: expose credit response fields to JSON</h3><p><strong>Problem:</strong> <code>CreditAccountDTO</code> has private fields and a constructor but no getters, which can prevent the expected response fields from being serialized.</p><p><strong>Proposed fix:</strong> Add accessors or use a response record, then verify the actual JSON contract.</p><p><strong>Check:</strong> Assert that a successful credit response contains the account number and amount.</p></div>
+<div class="item"><h3><span class="open">[ ] 16</span> chore: configure durable database storage and schema migrations</h3><p><strong>Problem:</strong> The current configuration uses in-memory H2 and <code>create-drop</code>, so application data is not durable across restarts.</p><p><strong>Proposed fix:</strong> Choose a durable database for deployment, use environment-specific configuration, and manage schema changes through migrations.</p><p><strong>Check:</strong> Restart the application and verify saved data survives; apply migrations to a fresh and an existing database.</p></div>
+<div class="item"><h3><span class="open">[ ] 17</span> chore: align Redis configuration with the cache implementation</h3><p><strong>Problem:</strong> Redis settings and dependencies exist, but the configured cache is in memory. Their presence can create an incorrect impression that Redis backs the cache.</p><p><strong>Proposed fix:</strong> Decide whether Redis is needed. Configure and use it deliberately or remove the unused settings and dependencies.</p><p><strong>Check:</strong> Verify the cache provider and expected behavior against the chosen configuration.</p></div>
+<h2>Presenting the work</h2><p>Open the checklist and Git history together. For each completed item: explain the original problem, show the corresponding commit, describe why the code fixes it, and mention the focused test. For open items, state the impact and your proposed solution without presenting it as completed.</p><div class="box"><strong>Example:</strong> “The README requires verified customers for transactions. In commit <code>3c10015</code>, I check the account owner's verification flag before credit or debit and test that unverified transactions are rejected. The Kafka event path that updates this flag is separate and remains open as item 13.”</div><p class="small">Status reflects the checklist and commits through 9f97ada. Focused tests were run for completed changes; this document does not claim a passing full test suite. Earlier Maven runs reported a cached-JAR access diagnostic during compiler cleanup but ended with BUILD SUCCESS.</p>
+</body></html>

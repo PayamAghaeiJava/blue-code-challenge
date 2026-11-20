@@ -103,6 +103,7 @@ public class WalletServiceTest {
         owner.setMobile("09120000000");
         owner.setVerified(true);
         account.setOwner(owner);
+        account.setType(Account.AccountType.SAVING);
         Mockito.when(accountRepository.findByNumber(account.getNumber())).thenReturn(account);
 
         CreditAccountCommand command = new CreditAccountCommand();
@@ -127,6 +128,7 @@ public class WalletServiceTest {
         owner.setMobile("09120000000");
         owner.setVerified(true);
         account.setOwner(owner);
+        account.setType(Account.AccountType.CHECKING);
         Mockito.when(accountRepository.findByNumber("account-17")).thenReturn(account);
 
         DebitAccountCommand command = new DebitAccountCommand();
@@ -173,6 +175,25 @@ public class WalletServiceTest {
                 () -> walletService.creditAccount(credit)).getStatusCode());
         assertEquals(HttpStatus.FORBIDDEN, assertThrows(ResponseStatusException.class,
                 () -> walletService.debitAccount(debit)).getStatusCode());
+        Mockito.verifyNoInteractions(transactionRepository, notificationService);
+    }
+
+    @Test
+    void givenSavingsAccount_whenDebit_thenReject() {
+        Account account = new Account();
+        Customer owner = new Customer();
+        owner.setVerified(true);
+        account.setOwner(owner);
+        account.setType(Account.AccountType.SAVING);
+        Mockito.when(accountRepository.findByNumber(account.getNumber())).thenReturn(account);
+        DebitAccountCommand command = new DebitAccountCommand();
+        command.setAccountNumber(account.getNumber());
+        command.setAmount(BigDecimal.ONE);
+
+        ResponseStatusException exception = assertThrows(ResponseStatusException.class,
+                () -> walletService.debitAccount(command));
+
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
         Mockito.verifyNoInteractions(transactionRepository, notificationService);
     }
 

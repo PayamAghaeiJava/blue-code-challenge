@@ -84,6 +84,9 @@ public class WalletService {
     public DebitAccountDTO debitAccount(DebitAccountCommand command) {
         validateAmount(command.getAmount());
         Account account = findVerifiedAccount(command.getAccountNumber());
+        if (account.getType() != AccountType.CHECKING) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only checking accounts can be debited");
+        }
 
         Transaction transaction = new Transaction(
                 command.getRequestId(),
