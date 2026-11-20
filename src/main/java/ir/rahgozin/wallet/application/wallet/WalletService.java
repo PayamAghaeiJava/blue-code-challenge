@@ -60,7 +60,7 @@ public class WalletService {
     @Transactional
     public CreditAccountDTO creditAccount(CreditAccountCommand command) {
         validateAmount(command.getAmount());
-        Account account = accountRepository.findByNumber(command.getAccountNumber());
+        Account account = findVerifiedAccount(command.getAccountNumber());
 
         Transaction transaction = new Transaction(
                 command.getRequestId(),
@@ -83,12 +83,7 @@ public class WalletService {
     @Transactional
     public DebitAccountDTO debitAccount(DebitAccountCommand command) {
         validateAmount(command.getAmount());
-        Account account = accountRepository.findByNumber(command.getAccountNumber());
-        if (account == null) {
-            throw new ResponseStatusException(
-                    HttpStatus.NOT_FOUND,
-                    "Account not found: " + command.getAccountNumber());
-        }
+        Account account = findVerifiedAccount(command.getAccountNumber());
 
         Transaction transaction = new Transaction(
                 command.getRequestId(),
@@ -111,6 +106,17 @@ public class WalletService {
         if (amount == null || amount.stripTrailingZeros().scale() > 2 || amount.abs().compareTo(new BigDecimal("100000000000000000")) >= 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Amount must fit within 17 digits");
         }
+    }
+
+    private Account findVerifiedAccount(String accountNumber) {
+        Account account = accountRepository.findByNumber(accountNumber);
+        if (account == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Account not found: " + accountNumber);
+        }
+        if (account.getOwner() == null || !account.getOwner().isVerified()) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Account owner must be verified");
+        }
+        return account;
     }
 
     @Transactional(readOnly = true)

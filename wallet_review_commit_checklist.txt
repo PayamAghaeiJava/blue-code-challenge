@@ -18,8 +18,15 @@ CRITICAL FINDINGS
 [x] 04  fix: calculate balances from transaction direction
         Use exact decimal money, credit/debit directions, public account numbers, and customer-scoped queries.
 
-[ ] 05  fix: enforce wallet transaction rules
-        Require KYC, restrict savings accounts to deposits, and reject nonpositive or unaffordable debits.
+[x] 05  fix: require customer verification for transactions
+        Reject credits and debits when the account owner has not passed KYC.
+[ ] 05a fix: prevent withdrawals from savings accounts
+        Allow withdrawals only from checking accounts.
+[ ] 05b fix: reject nonpositive transaction amounts
+        Require credit and debit amounts to be greater than zero.
+[ ] 05c fix: reject withdrawals exceeding the account balance
+        Check the balance before saving a debit; concurrency protection follows in item 06.
+[ ] 05d fix: authorize account ownership
         Add account ownership authorization after choosing the caller identity/provider model.
 
 [ ] 06  fix: make wallet writes idempotent and concurrency-safe
