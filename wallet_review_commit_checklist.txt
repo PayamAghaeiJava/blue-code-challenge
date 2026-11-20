@@ -12,7 +12,7 @@ CRITICAL FINDINGS
 [x] 02  fix: persist wallet transactions through the owning relationship
         Keep the account transaction collection mutable and save ledger rows explicitly.
 
-[ ] 03  fix: map debit requests by public account number
+[x] 03  fix: map debit requests by public account number
         Add the request converter, use the UUID string consistently, and return 404 for unknown accounts.
 
 [ ] 04  fix: calculate balances from transaction direction

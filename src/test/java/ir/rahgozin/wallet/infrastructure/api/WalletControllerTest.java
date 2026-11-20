@@ -1,7 +1,9 @@
 package ir.rahgozin.wallet.infrastructure.api;
 
 import ir.rahgozin.wallet.application.wallet.WalletService;
+import ir.rahgozin.wallet.application.wallet.command.DebitAccountCommand;
 import ir.rahgozin.wallet.application.wallet.dto.AccountBalanceDTO;
+import ir.rahgozin.wallet.application.wallet.dto.DebitAccountDTO;
 
 import ir.rahgozin.wallet.application.wallet.query.AccountBalanceQuery;
 import lombok.extern.log4j.Log4j2;
@@ -12,7 +14,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
@@ -21,6 +25,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -35,6 +40,34 @@ public class WalletControllerTest {
 
     @MockBean
     private WalletService walletService;
+
+    @Test
+    public void debitRequestConvertsPublicAccountNumberAndRequestId() throws Exception {
+        when(walletService.debitAccount(any(DebitAccountCommand.class)))
+                .thenReturn(new DebitAccountDTO("account-uuid", 20.0));
+
+        mockMvc.perform(post("/wallet/debit")
+                        .contentType("application/json")
+                        .content("{\"requestId\":\"retry-1\",\"accountNumber\":\"account-uuid\",\"amount\":20.0}"))
+                .andExpect(status().isOk());
+
+        org.mockito.ArgumentCaptor<DebitAccountCommand> commandCaptor =
+                org.mockito.ArgumentCaptor.forClass(DebitAccountCommand.class);
+        verify(walletService).debitAccount(commandCaptor.capture());
+        org.junit.jupiter.api.Assertions.assertEquals("retry-1", commandCaptor.getValue().getRequestId());
+        org.junit.jupiter.api.Assertions.assertEquals("account-uuid", commandCaptor.getValue().getAccountNumber());
+    }
+
+    @Test
+    public void debitForUnknownAccountReturnsNotFound() throws Exception {
+        when(walletService.debitAccount(any(DebitAccountCommand.class)))
+                .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Account not found: missing"));
+
+        mockMvc.perform(post("/wallet/debit")
+                        .contentType("application/json")
+                        .content("{\"requestId\":\"retry-2\",\"accountNumber\":\"missing\",\"amount\":20.0}"))
+                .andExpect(status().isNotFound());
+    }
 
     @Test
     public void testRateLimit() throws Exception {

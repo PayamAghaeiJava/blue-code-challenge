@@ -1,6 +1,7 @@
 package ir.rahgozin.wallet.application.wallet;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
@@ -14,7 +15,9 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
+import org.springframework.web.server.ResponseStatusException;
 
 import ir.rahgozin.wallet.application.common.NotificationService;
 import ir.rahgozin.wallet.application.customer.Customer;
@@ -117,15 +120,15 @@ public class WalletServiceTest {
     @Test
     void givenDebit_whenDebitAccount_thenSaveTransactionWithAccountReference() {
         Account account = new Account();
-        account.setId(17L);
+        account.setNumber("account-17");
         Customer owner = new Customer();
         owner.setMobile("09120000000");
         account.setOwner(owner);
-        Mockito.when(accountRepository.findById(17L)).thenReturn(Optional.of(account));
+        Mockito.when(accountRepository.findByNumber("account-17")).thenReturn(account);
 
         DebitAccountCommand command = new DebitAccountCommand();
         command.setRequestId("debit-1");
-        command.setAccountNumber(17L);
+        command.setAccountNumber("account-17");
         command.setAmount(50.0);
 
         walletService.debitAccount(command);
@@ -135,6 +138,20 @@ public class WalletServiceTest {
                         && "debit-1".equals(transaction.getRequestId())
                         && transaction.getAmount().equals(50.0)));
         assertEquals(1, account.getTransactions().size());
+    }
+
+    @Test
+    void givenUnknownPublicAccountNumber_whenDebit_thenThrowAccountNotFound() {
+        DebitAccountCommand command = new DebitAccountCommand();
+        command.setAccountNumber("unknown-account");
+        command.setRequestId("debit-unknown");
+        command.setAmount(10.0);
+
+        ResponseStatusException exception = assertThrows(ResponseStatusException.class,
+                () -> walletService.debitAccount(command));
+        assertEquals(HttpStatus.NOT_FOUND, exception.getStatusCode());
+        Mockito.verify(accountRepository).findByNumber("unknown-account");
+        Mockito.verifyNoInteractions(transactionRepository);
     }
 
 

@@ -15,8 +15,10 @@ import ir.rahgozin.wallet.application.wallet.query.AccountBalanceQuery;
 import ir.rahgozin.wallet.application.wallet.query.TransactionQuery;
 import lombok.AllArgsConstructor;
 import lombok.extern.log4j.Log4j2;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Collections;
 import java.util.List;
@@ -79,7 +81,12 @@ public class WalletService {
 
     @Transactional
     public DebitAccountDTO debitAccount(DebitAccountCommand command) {
-        Account account = accountRepository.findById(command.getAccountNumber()).orElseThrow();
+        Account account = accountRepository.findByNumber(command.getAccountNumber());
+        if (account == null) {
+            throw new ResponseStatusException(
+                    HttpStatus.NOT_FOUND,
+                    "Account not found: " + command.getAccountNumber());
+        }
 
         Transaction transaction = new Transaction(
                 command.getRequestId(),

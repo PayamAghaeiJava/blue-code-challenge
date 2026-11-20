@@ -5,6 +5,6 @@ import lombok.Data;
 @Data
 public class DebitAccountCommand {
     private String requestId;
-    private Long accountNumber;
+    private String accountNumber;
     private Double amount;
 }
