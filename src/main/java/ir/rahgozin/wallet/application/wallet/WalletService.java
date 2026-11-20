@@ -21,9 +21,10 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.Collections;
+import java.util.ArrayList;
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 @Log4j2
 @Service
@@ -58,13 +59,13 @@ public class WalletService {
 
     @Transactional
     public CreditAccountDTO creditAccount(CreditAccountCommand command) {
-
+        validateAmount(command.getAmount());
         Account account = accountRepository.findByNumber(command.getAccountNumber());
 
         Transaction transaction = new Transaction(
                 command.getRequestId(),
                 account,
-                "credit",
+                TransactionDirection.CREDIT,
                 command.getAmount());
 
         account.addTransaction(transaction);
@@ -81,6 +82,7 @@ public class WalletService {
 
     @Transactional
     public DebitAccountDTO debitAccount(DebitAccountCommand command) {
+        validateAmount(command.getAmount());
         Account account = accountRepository.findByNumber(command.getAccountNumber());
         if (account == null) {
             throw new ResponseStatusException(
@@ -91,7 +93,7 @@ public class WalletService {
         Transaction transaction = new Transaction(
                 command.getRequestId(),
                 account,
-                "debit",
+                TransactionDirection.DEBIT,
                 command.getAmount()
         );
 
@@ -105,16 +107,34 @@ public class WalletService {
         return new DebitAccountDTO(account.getNumber(), command.getAmount());
     }
 
+    private void validateAmount(BigDecimal amount) {
+        if (amount == null || amount.stripTrailingZeros().scale() > 2 || amount.abs().compareTo(new BigDecimal("100000000000000000")) >= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Amount must fit within 17 digits");
+        }
+    }
+
+    @Transactional(readOnly = true)
     public List<AccountBalanceDTO> accountBalance(AccountBalanceQuery query) {
-        return accountRepository.findAll()
-                .stream()
-                .filter(account -> account.getOwner().getId().equals(query.getCustomerId()))
-                .map(account -> {
-                    AccountBalanceDTO accountBalanceDTO = new AccountBalanceDTO();
-                    accountBalanceDTO.setAmount(account.getTransactions().stream().mapToDouble(Transaction::getAmount).sum());
-                    accountBalanceDTO.setNumber(account.getId());
-                    return accountBalanceDTO;
-                }).collect(Collectors.toList());
+        List<AccountBalanceDTO> balances = new ArrayList<>();
+        List<Account> accounts = accountRepository.findByOwnerId(query.getCustomerId());
+
+        for (Account account : accounts) {
+            BigDecimal balance = BigDecimal.ZERO;
+            for (Transaction transaction : account.getTransactions()) {
+                if (transaction.getDirection() == TransactionDirection.CREDIT) {
+                    balance = balance.add(transaction.getAmount());
+                } else if (transaction.getDirection() == TransactionDirection.DEBIT) {
+                    balance = balance.subtract(transaction.getAmount());
+                } else {
+                    throw new IllegalStateException("Unknown transaction direction: " + transaction.getDirection());
+                }
+            }
+            AccountBalanceDTO result = new AccountBalanceDTO();
+            result.setNumber(account.getNumber());
+            result.setAmount(balance);
+            balances.add(result);
+        }
+        return balances;
     }
 
     public List<TransactionDTO> listTransactions(TransactionQuery query) {

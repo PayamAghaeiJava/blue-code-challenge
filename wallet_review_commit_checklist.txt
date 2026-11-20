@@ -15,7 +15,7 @@ CRITICAL FINDINGS
 [x] 03  fix: map debit requests by public account number
         Add the request converter, use the UUID string consistently, and return 404 for unknown accounts.
 
-[ ] 04  fix: calculate balances from transaction direction
+[x] 04  fix: calculate balances from transaction direction
         Use exact decimal money, credit/debit directions, public account numbers, and customer-scoped queries.
 
 [ ] 05  fix: enforce wallet transaction rules

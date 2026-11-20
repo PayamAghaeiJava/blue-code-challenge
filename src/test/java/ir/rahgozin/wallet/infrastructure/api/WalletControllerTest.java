@@ -18,6 +18,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -44,7 +45,7 @@ public class WalletControllerTest {
     @Test
     public void debitRequestConvertsPublicAccountNumberAndRequestId() throws Exception {
         when(walletService.debitAccount(any(DebitAccountCommand.class)))
-                .thenReturn(new DebitAccountDTO("account-uuid", 20.0));
+                .thenReturn(new DebitAccountDTO("account-uuid", new BigDecimal("20.00")));
 
         mockMvc.perform(post("/wallet/debit")
                         .contentType("application/json")
@@ -73,8 +74,8 @@ public class WalletControllerTest {
     public void testRateLimit() throws Exception {
         String customerId = "12345";
         AccountBalanceDTO accountBalanceDTO = new AccountBalanceDTO();
-        accountBalanceDTO.setNumber(1L);
-        accountBalanceDTO.setAmount(1D);
+        accountBalanceDTO.setNumber("account-uuid");
+        accountBalanceDTO.setAmount(BigDecimal.ONE);
         when(walletService.accountBalance(any(AccountBalanceQuery.class))).thenReturn(List.of(accountBalanceDTO));
 
         for (int i = 1; i <= 5; i++) {
@@ -116,8 +117,8 @@ public class WalletControllerTest {
         String customerId = "12345";
 
         AccountBalanceDTO accountBalanceDTO = new AccountBalanceDTO();
-        accountBalanceDTO.setNumber(1L);
-        accountBalanceDTO.setAmount(1D);
+        accountBalanceDTO.setNumber("account-uuid");
+        accountBalanceDTO.setAmount(BigDecimal.ONE);
         when(walletService.accountBalance(any(AccountBalanceQuery.class))).thenReturn(List.of(accountBalanceDTO));
 
         int numThreads = 10;

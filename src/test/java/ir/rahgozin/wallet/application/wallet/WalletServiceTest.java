@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -106,14 +107,14 @@ public class WalletServiceTest {
         CreditAccountCommand command = new CreditAccountCommand();
         command.setRequestId("credit-1");
         command.setAccountNumber(account.getNumber());
-        command.setAmount(100.0);
+        command.setAmount(new BigDecimal("100.00"));
 
         walletService.creditAccount(command);
 
         Mockito.verify(transactionRepository).save(Mockito.argThat(transaction ->
                 transaction.getAccount() == account
                         && "credit-1".equals(transaction.getRequestId())
-                        && transaction.getAmount().equals(100.0)));
+                        && transaction.getAmount().equals(new BigDecimal("100.00"))));
         assertEquals(1, account.getTransactions().size());
     }
 
@@ -129,14 +130,14 @@ public class WalletServiceTest {
         DebitAccountCommand command = new DebitAccountCommand();
         command.setRequestId("debit-1");
         command.setAccountNumber("account-17");
-        command.setAmount(50.0);
+        command.setAmount(new BigDecimal("50.00"));
 
         walletService.debitAccount(command);
 
         Mockito.verify(transactionRepository).save(Mockito.argThat(transaction ->
                 transaction.getAccount() == account
                         && "debit-1".equals(transaction.getRequestId())
-                        && transaction.getAmount().equals(50.0)));
+                        && transaction.getAmount().equals(new BigDecimal("50.00"))));
         assertEquals(1, account.getTransactions().size());
     }
 
@@ -145,7 +146,7 @@ public class WalletServiceTest {
         DebitAccountCommand command = new DebitAccountCommand();
         command.setAccountNumber("unknown-account");
         command.setRequestId("debit-unknown");
-        command.setAmount(10.0);
+        command.setAmount(new BigDecimal("10.00"));
 
         ResponseStatusException exception = assertThrows(ResponseStatusException.class,
                 () -> walletService.debitAccount(command));
@@ -156,7 +157,7 @@ public class WalletServiceTest {
 
 
     @Test
-    void givenCustomerWithNoTransaction_whenInquiryAccountBalanceMoreThanLimitCountPerDay_thenThrowException() {
+    void givenCreditsAndDebits_whenInquiryBalance_thenSubtractDebits() {
         Long customerId = Long.valueOf(RandomStringUtils.randomNumeric(5));
 
         var accountOwner = new Customer();
@@ -169,11 +170,11 @@ public class WalletServiceTest {
 
         var debitTransactions =  IntStream.rangeClosed(1, 10)
                 .mapToObj(operand ->
-                        new Transaction(RandomStringUtils.randomNumeric(5), account, "deposit",  10000.0 ))
+                        new Transaction(RandomStringUtils.randomNumeric(5), account, TransactionDirection.CREDIT, new BigDecimal("10000.00") ))
                 .collect(Collectors.toList());
 
         var withdrawalTransactions = IntStream.rangeClosed(1, 5).mapToObj(value ->
-                new Transaction(RandomStringUtils.randomNumeric(5), account, "withdrawal", 10000.0)
+                new Transaction(RandomStringUtils.randomNumeric(5), account, TransactionDirection.DEBIT, new BigDecimal("10000.00"))
         ).collect(Collectors.toList());
 
         List<Transaction> totalTransactions = new ArrayList<>();
@@ -181,17 +182,49 @@ public class WalletServiceTest {
         totalTransactions.addAll(withdrawalTransactions);
         account.setTransactions(totalTransactions);
 
-        Mockito.doReturn(List.of(account)).when(accountRepository).findAll();
+        Mockito.doReturn(List.of(account)).when(accountRepository).findByOwnerId(customerId);
 
 
         var accountBalanceQuery = new AccountBalanceQuery();
         accountBalanceQuery.setCustomerId(customerId);
         Optional<AccountBalanceDTO> accountBalanceDto = walletService.accountBalance(accountBalanceQuery).stream()
-                .filter(accountBalanceDTO -> accountBalanceDTO.getNumber().equals(account.getId()))
+                .filter(accountBalanceDTO -> accountBalanceDTO.getNumber().equals(account.getNumber()))
                 .findFirst();
 
         assertTrue(accountBalanceDto.isPresent());
-        assertEquals(50000.0, accountBalanceDto.get().getAmount());
+        assertEquals(new BigDecimal("50000.00"), accountBalanceDto.get().getAmount());
+        Mockito.verify(accountRepository).findByOwnerId(customerId);
+        Mockito.verify(accountRepository, Mockito.never()).findAll();
+    }
+
+    @Test
+    void givenDecimalTransactions_whenInquiryBalance_thenCalculateExactly() {
+        Account account = new Account();
+        account.setNumber("public-number");
+        account.setTransactions(List.of(
+                new Transaction("one", account, TransactionDirection.CREDIT, new BigDecimal("0.10")),
+                new Transaction("two", account, TransactionDirection.CREDIT, new BigDecimal("0.20")),
+                new Transaction("three", account, TransactionDirection.DEBIT, new BigDecimal("0.05"))));
+        Mockito.when(accountRepository.findByOwnerId(123L)).thenReturn(List.of(account));
+        AccountBalanceQuery query = new AccountBalanceQuery();
+        query.setCustomerId(123L);
+
+        List<AccountBalanceDTO> balances = walletService.accountBalance(query);
+
+        assertEquals(1, balances.size());
+        assertEquals("public-number", balances.get(0).getNumber());
+        assertEquals(new BigDecimal("0.25"), balances.get(0).getAmount());
+    }
+
+    @Test
+    void givenTooManyDecimalPlaces_whenCredit_thenRejectAmount() {
+        CreditAccountCommand command = new CreditAccountCommand();
+        command.setAmount(new BigDecimal("1.001"));
+
+        ResponseStatusException exception = assertThrows(ResponseStatusException.class,
+                () -> walletService.creditAccount(command));
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatusCode());
+        Mockito.verifyNoInteractions(transactionRepository);
     }
 
     @Test
@@ -215,16 +248,16 @@ public class WalletServiceTest {
         var mainAccountTransactions =  IntStream.rangeClosed(1, 10)
                 .mapToObj(operand -> {
                     if (operand > 5)
-                         return new Transaction(RandomStringUtils.randomNumeric(5), account, "deposit",  10000.0 );
+                         return new Transaction(RandomStringUtils.randomNumeric(5), account, TransactionDirection.CREDIT, new BigDecimal("10000.00") );
                     else {
-                        return new Transaction(RandomStringUtils.randomNumeric(5), account, "withdrawal",  5000.0 );
+                        return new Transaction(RandomStringUtils.randomNumeric(5), account, TransactionDirection.DEBIT, new BigDecimal("5000.00") );
                     }
                 })
                 .collect(Collectors.toList());
         account.setTransactions(mainAccountTransactions);
 
         var withdrawalTransactions = IntStream.rangeClosed(1, 5).mapToObj(value ->
-                new Transaction(RandomStringUtils.randomNumeric(5), anotherAccount, "withdrawal", 10000.0)
+                new Transaction(RandomStringUtils.randomNumeric(5), anotherAccount, TransactionDirection.DEBIT, new BigDecimal("10000.00"))
         ).collect(Collectors.toList());
         anotherAccount.setTransactions(withdrawalTransactions);
 
@@ -234,12 +267,12 @@ public class WalletServiceTest {
         var transactionQuery = new TransactionQuery();
         transactionQuery.setDirection("deposit");
         transactionQuery.setCustomerId(customerId);
-        transactionQuery.setFromAmount(6000.0);
+        transactionQuery.setFromAmount(new BigDecimal("6000.00"));
 
 
         var transactions = walletService.listTransactions(transactionQuery);
-        var sum = transactions.stream().map(TransactionDTO::getAmount).reduce(0D, (first, second) ->  first + second);
+        var sum = transactions.stream().map(TransactionDTO::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
         
-        assertEquals(75000, sum);
+        assertEquals(new BigDecimal("75000.00"), sum);
     }
 }
