@@ -15,6 +15,7 @@ import org.springframework.core.convert.ConversionService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import java.math.BigDecimal;
 
 @Log4j2
 @RestController
@@ -62,9 +63,15 @@ public class WalletController {
     }
 
     @PostMapping(path = "/transactions")
-    public ResponseEntity<?> transactionList(@RequestParam("customerId") String customerId) {
+    public ResponseEntity<?> transactionList(@RequestParam("customerId") Long customerId,
+                                             @RequestParam(value = "fromAmount", required = false) BigDecimal fromAmount,
+                                             @RequestParam(value = "toAmount", required = false) BigDecimal toAmount,
+                                             @RequestParam(value = "direction", required = false) String direction) {
         TransactionQuery query = new TransactionQuery();
-        query.setCustomerId(Long.valueOf(customerId));
+        query.setCustomerId(customerId);
+        query.setFromAmount(fromAmount);
+        query.setToAmount(toAmount);
+        query.setDirection(direction);
         return ResponseEntity.ok(walletService.listTransactions(query));
     }
 }

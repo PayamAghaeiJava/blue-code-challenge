@@ -20,7 +20,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
-import java.util.Collections;
 import java.util.ArrayList;
 import java.math.BigDecimal;
 import java.util.List;
@@ -156,8 +155,42 @@ public class WalletService {
         return balance;
     }
 
+    @Transactional(readOnly = true)
     public List<TransactionDTO> listTransactions(TransactionQuery query) {
-        // TODO implement the logic
-        return Collections.emptyList();
+        if (query.getCustomerId() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Customer ID is required");
+        }
+        if (query.getFromAmount() != null && query.getToAmount() != null
+                && query.getFromAmount().compareTo(query.getToAmount()) > 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Minimum amount must not exceed maximum amount");
+        }
+
+        TransactionDirection direction = null;
+        if (query.getDirection() != null && !query.getDirection().isBlank()) {
+            if (query.getDirection().equalsIgnoreCase("deposit")) {
+                direction = TransactionDirection.CREDIT;
+            } else if (query.getDirection().equalsIgnoreCase("withdrawal")) {
+                direction = TransactionDirection.DEBIT;
+            } else {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Direction must be deposit or withdrawal");
+            }
+        }
+
+        List<TransactionDTO> results = new ArrayList<>();
+        for (Account account : accountRepository.findByOwnerId(query.getCustomerId())) {
+            for (Transaction transaction : account.getTransactions()) {
+                if (direction != null && transaction.getDirection() != direction) {
+                    continue;
+                }
+                if (query.getFromAmount() != null && transaction.getAmount().compareTo(query.getFromAmount()) < 0) {
+                    continue;
+                }
+                if (query.getToAmount() != null && transaction.getAmount().compareTo(query.getToAmount()) > 0) {
+                    continue;
+                }
+                results.add(new TransactionDTO(account.getId(), transaction.getAmount()));
+            }
+        }
+        return results;
     }
 }

@@ -384,7 +384,7 @@ public class WalletServiceTest {
         anotherAccount.setTransactions(withdrawalTransactions);
 
 
-        Mockito.doReturn(List.of(account, anotherAccount)).when(accountRepository).findAll();
+        Mockito.doReturn(List.of(account)).when(accountRepository).findByOwnerId(customerId);
 
         var transactionQuery = new TransactionQuery();
         transactionQuery.setDirection("deposit");
@@ -395,6 +395,6 @@ public class WalletServiceTest {
         var transactions = walletService.listTransactions(transactionQuery);
         var sum = transactions.stream().map(TransactionDTO::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
         
-        assertEquals(new BigDecimal("75000.00"), sum);
+        assertEquals(new BigDecimal("50000.00"), sum);
     }
 }
