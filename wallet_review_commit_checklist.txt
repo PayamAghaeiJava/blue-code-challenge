@@ -32,27 +32,9 @@ CRITICAL FINDINGS
 [ ] 10  fix: enforce the five-per-day balance inquiry limit
         Count atomically per customer and day, define the time zone/reset, and test the boundary.
 
-[ ] 11  feat: return filtered customer transaction history
-        Apply customer, direction, and amount filters with stable ordering and pagination.
-
-[ ] 12  fix: connect KYC events to transaction eligibility
-        Inject services, enable the configured Kafka listener, dispatch identifiers correctly, and reject unverified customers.
-
-FOLLOW-UP RISKS ALSO LISTED IN THE REVIEW
------------------------------------------
-[ ] 13  fix: persist notification work reliably
-        Replace fire-and-forget database writes with a durable delivery workflow and observable status.
-
-[ ] 14  fix: expose credit response fields to JSON
-        Add accessors or use a response record and verify the serialized API response.
-
-[ ] 15  chore: configure durable database storage and schema migrations
-        Replace development-only in-memory H2/create-drop settings for deployment.
-
-[ ] 16  chore: align Redis configuration with the cache implementation
-        Configure Redis as intended or remove unused Redis cache settings/dependencies.
+[ ] 11  fix: connect KYC events to transaction eligibility
+        Connect and validate KYC events; verify both identifier types and the Kafka flow before marking complete.
 
 NOTES
 -----
 - Keep each numbered item in its own commit so the review can be presented one change at a time.
-- The PDF's transaction-history example expects 50,000 for five 10,000 deposits filtered by a 6,000 minimum; update the stale 75,000 test expectation.

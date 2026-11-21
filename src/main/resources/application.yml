@@ -26,9 +26,10 @@ spring:
           port: 6379
     kafka:
         consumer:
-            enable-auto-commit: true
+            enable-auto-commit: false
             auto-offset-reset: latest
             group-id: wallet_consumer_group_id
+            value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
 
 server:
     shutdown: immediate
